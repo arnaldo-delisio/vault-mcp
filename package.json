@@ -27,7 +27,7 @@
     "express": "^4.22.1",
     "express-session": "^1.18.2",
     "gray-matter": "^4.0.3",
-    "mcp-oauth-password": "^0.2.0",
+    "mcp-oauth-password": "^0.2.1",
     "okapibm25": "^1.4.1",
     "openai": "^6.16.0",
     "youtube-caption-extractor": "^1.9.1",
