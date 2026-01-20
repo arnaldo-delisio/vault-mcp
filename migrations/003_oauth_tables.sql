@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS authorization_codes (
   redirect_uri TEXT NOT NULL,
   code_challenge TEXT,
   code_challenge_method TEXT,
+  scope TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   expires_at TIMESTAMPTZ NOT NULL
 );
