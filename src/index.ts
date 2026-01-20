@@ -90,7 +90,7 @@ app.post('/mcp', authMiddleware, async (req, res) => {
 
 // Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`vault-mcp listening on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/`);
   console.log(`OAuth endpoints ready at ${process.env.SERVER_URL}`);
