@@ -9,7 +9,12 @@
     "dev": "tsx watch src/index.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["mcp", "vault", "oauth", "supabase"],
+  "keywords": [
+    "mcp",
+    "vault",
+    "oauth",
+    "supabase"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
@@ -23,6 +28,8 @@
     "express-session": "^1.18.2",
     "gray-matter": "^4.0.3",
     "mcp-oauth-password": "^0.2.0",
+    "okapibm25": "^1.4.1",
+    "openai": "^6.16.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
