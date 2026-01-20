@@ -26,6 +26,9 @@ for (const envVar of requiredEnvVars) {
 
 const app = express();
 
+// Trust Railway proxy for secure cookies and correct client IPs
+app.set('trust proxy', 1);
+
 // Parse JSON request bodies
 app.use(express.json());
 
