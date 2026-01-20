@@ -9,18 +9,19 @@ import { addNoteTool, addNoteToolDef } from './tools/notes.js';
 import { searchNotesTool } from './tools/search.js';
 import { readNoteTool } from './tools/read.js';
 
-// Create MCP server instance
-const server = new Server(
-  {
-    name: 'vault-mcp',
-    version: '1.0.0'
-  },
-  {
-    capabilities: {
-      tools: {}
+// Factory function to create MCP server instances (one per session)
+export function createMcpServer(): Server {
+  const server = new Server(
+    {
+      name: 'vault-mcp',
+      version: '1.0.0'
+    },
+    {
+      capabilities: {
+        tools: {}
+      }
     }
-  }
-);
+  );
 
 // List available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -144,4 +145,5 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   throw new Error(`Unknown tool: ${name}`);
 });
 
-export { server };
+  return server;
+}

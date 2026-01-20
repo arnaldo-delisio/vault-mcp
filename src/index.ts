@@ -1,6 +1,9 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
 import { setupOAuth, createAuthMiddleware } from 'mcp-oauth-password';
-import { server } from './mcp-server.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { randomUUID } from 'crypto';
+import { createMcpServer } from './mcp-server.js';
 
 // Validate required environment variables
 const requiredEnvVars = [
@@ -52,6 +55,9 @@ app.set('views', './node_modules/mcp-oauth-password/views');
 // Create auth middleware to protect MCP endpoint
 const authMiddleware = createAuthMiddleware(oauthConfig);
 
+// Session storage for MCP connections
+const sessions = new Map<string, { server: Server; transport: StreamableHTTPServerTransport }>();
+
 // Health check endpoint
 app.get('/', (req, res) => {
   res.json({
@@ -61,31 +67,89 @@ app.get('/', (req, res) => {
   });
 });
 
-// Protected MCP endpoint
-app.post('/mcp', authMiddleware, async (req, res) => {
-  try {
-    const mcpRequest = req.body;
+// POST /mcp - Handle MCP JSON-RPC requests
+app.post('/mcp', authMiddleware, async (req: Request, res: Response) => {
+  const sessionId = req.headers['mcp-session-id'] as string | undefined;
+  const isInitialize = req.body?.method === 'initialize';
 
-    // Process MCP request through server
-    // For now, return a basic response - full handler added in future tasks
-    res.json({
-      jsonrpc: '2.0',
-      id: mcpRequest.id,
-      result: {
-        content: [{ type: 'text', text: 'MCP server running' }]
+  // Existing session
+  if (sessionId && sessions.has(sessionId)) {
+    const session = sessions.get(sessionId)!;
+    try {
+      await session.transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error('Error handling request:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Internal server error' });
       }
-    });
-  } catch (error) {
-    console.error('MCP request error:', error);
-    res.status(500).json({
-      jsonrpc: '2.0',
-      id: req.body.id,
-      error: {
-        code: -32603,
-        message: error instanceof Error ? error.message : 'Internal error'
-      }
-    });
+    }
+    return;
   }
+
+  // New session on initialize
+  if (isInitialize && !sessionId) {
+    const newSessionId = randomUUID();
+
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => newSessionId,
+      onsessioninitialized: (sid) => {
+        console.log(`MCP session initialized: ${sid}`);
+      },
+    });
+
+    const server = createMcpServer();
+
+    // Connect server to transport
+    await server.connect(transport);
+
+    // Store session
+    sessions.set(newSessionId, { server, transport });
+
+    try {
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error('Error handling initialize:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+    return;
+  }
+
+  res.status(400).json({ error: 'Invalid or missing session' });
+});
+
+// GET /mcp - SSE stream
+app.get('/mcp', authMiddleware, async (req: Request, res: Response) => {
+  const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+  if (!sessionId || !sessions.has(sessionId)) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  const session = sessions.get(sessionId)!;
+  try {
+    await session.transport.handleRequest(req, res);
+  } catch (error) {
+    console.error('Error handling SSE:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+});
+
+// DELETE /mcp - Terminate session
+app.delete('/mcp', authMiddleware, async (req: Request, res: Response) => {
+  const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+  if (sessionId && sessions.has(sessionId)) {
+    const session = sessions.get(sessionId)!;
+    await session.server.close();
+    sessions.delete(sessionId);
+    console.log(`MCP session terminated: ${sessionId}`);
+  }
+
+  res.status(200).send();
 });
 
 // Start server
