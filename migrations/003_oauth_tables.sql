@@ -14,8 +14,12 @@ CREATE TABLE IF NOT EXISTS authorization_codes (
 CREATE TABLE IF NOT EXISTS oauth_clients (
   client_id TEXT PRIMARY KEY,
   client_secret TEXT,
+  client_name TEXT,
   redirect_uris TEXT[],
+  token_endpoint_auth_method TEXT,
   grant_types TEXT[],
+  response_types TEXT[],
+  scope TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
