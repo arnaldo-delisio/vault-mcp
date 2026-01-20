@@ -31,6 +31,7 @@ app.set('trust proxy', 1);
 
 // Parse JSON request bodies
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // Parse form data
 
 // OAuth configuration
 const oauthConfig = {
