@@ -3,9 +3,12 @@ import { encode } from 'gpt-tokenizer';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { WhisperService } from './whisper-service.js';
 
 const TOKEN_THRESHOLD = 10000;
 const TRANSCRIPTS_DIR = join(tmpdir(), 'youtube-transcripts');
+
+const whisperService = new WhisperService();
 
 export interface ExtractedContent {
   content: string;
@@ -39,34 +42,54 @@ export async function extractContent(url: string): Promise<ExtractedContent> {
     // Extract YouTube video ID
     const videoID = match[1];
 
+    // Try captions first, then Whisper fallback
+    let transcript: string;
+    let subtitles: any[] | null = null;
+
     try {
       // Fetch English subtitles
-      const subtitles = await getSubtitles({ videoID, lang: 'en' });
+      subtitles = await getSubtitles({ videoID, lang: 'en' });
 
       if (!subtitles || subtitles.length === 0) {
         throw new Error('No English captions available for this video');
       }
 
       // Join subtitle text into transcript
-      const transcript = subtitles.map(s => s.text).join(' ');
+      transcript = subtitles.map(s => s.text).join(' ');
 
-      // Count tokens to decide output method
-      const tokenCount = encode(transcript).length;
-
-      if (tokenCount <= TOKEN_THRESHOLD) {
-        // Small enough - return inline
-        return {
-          content: transcript,
-          type: 'video' as const
-        };
+    } catch (captionError: any) {
+      // Try Whisper fallback if available
+      if (whisperService.isAvailable()) {
+        console.log(`No captions for ${videoID}, trying Whisper fallback...`);
+        try {
+          transcript = await whisperService.transcribe(videoID);
+        } catch (whisperError: any) {
+          throw new Error(`Both captions and Whisper failed: ${captionError.message}`);
+        }
+      } else {
+        // No fallback available
+        throw new Error(`No English captions available and Whisper fallback not configured (OPENAI_API_KEY missing). Try a video with captions enabled.`);
       }
+    }
 
-      // Too large - write to file with sparse timestamps
-      await mkdir(TRANSCRIPTS_DIR, { recursive: true });
-      const filePath = join(TRANSCRIPTS_DIR, `${videoID}.txt`);
+    // Count tokens to decide output method
+    const tokenCount = encode(transcript).length;
 
-      // Format with timestamps every 60 seconds
-      let fileContent = '';
+    if (tokenCount <= TOKEN_THRESHOLD) {
+      // Small enough - return inline
+      return {
+        content: transcript,
+        type: 'video' as const
+      };
+    }
+
+    // Too large - write to file with sparse timestamps
+    await mkdir(TRANSCRIPTS_DIR, { recursive: true });
+    const filePath = join(TRANSCRIPTS_DIR, `${videoID}.txt`);
+
+    // Format with timestamps every 60 seconds (if we have subtitle timing)
+    let fileContent = '';
+    if (subtitles && subtitles.length > 0) {
       let lastTimestamp = -60;
       for (const subtitle of subtitles) {
         const currentTime = Math.floor(parseFloat(subtitle.start));
@@ -78,36 +101,24 @@ export async function extractContent(url: string): Promise<ExtractedContent> {
         }
         fileContent += subtitle.text + ' ';
       }
-
-      await writeFile(filePath, fileContent, 'utf-8');
-
-      // Generate preview (first ~1500 tokens)
-      const previewLength = Math.min(transcript.length, 8000); // Approximate 1500 tokens
-      const preview = transcript.slice(0, previewLength) + '...';
-
-      return {
-        content: preview,
-        type: 'video' as const,
-        filePath,
-        tokenCount,
-        instructions: `Transcript too large (${tokenCount} tokens). Full transcript saved to: ${filePath}\n\nTo search: Use Grep tool with pattern\nTo read sections: Use Read tool with offset/limit\nTo navigate: File has timestamps every 60s ([MM:SS] format)`
-      };
-
-    } catch (error: any) {
-      // Provide descriptive error messages
-      if (error.message?.includes('404') || error.message?.includes('not found')) {
-        throw new Error(`YouTube video not found: ${videoID}`);
-      }
-      if (error.message?.includes('caption') || error.message?.includes('subtitle')) {
-        throw new Error(`No English captions available for this video. Try a video with captions enabled.`);
-      }
-      if (error.message?.includes('network') || error.message?.includes('ENOTFOUND')) {
-        throw new Error(`Network error while fetching YouTube transcript. Check your internet connection.`);
-      }
-
-      // Re-throw with original message if no specific match
-      throw new Error(`Failed to extract YouTube transcript: ${error.message}`);
+    } else {
+      // Whisper transcript without timing - just write plain text
+      fileContent = transcript;
     }
+
+    await writeFile(filePath, fileContent, 'utf-8');
+
+    // Generate preview (first ~1500 tokens)
+    const previewLength = Math.min(transcript.length, 8000); // Approximate 1500 tokens
+    const preview = transcript.slice(0, previewLength) + '...';
+
+    return {
+      content: preview,
+      type: 'video' as const,
+      filePath,
+      tokenCount,
+      instructions: `Transcript too large (${tokenCount} tokens). Full transcript saved to: ${filePath}\n\nTo search: Use Grep tool with pattern\nTo read sections: Use Read tool with offset/limit${subtitles ? '\nTo navigate: File has timestamps every 60s ([MM:SS] format)' : ''}`
+    };
 
   } else {
     // Non-YouTube URL - delegate to Claude's WebFetch
