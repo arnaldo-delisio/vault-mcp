@@ -1,13 +1,17 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
   CallToolRequestSchema,
-  ListToolsRequestSchema
+  ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema
 } from '@modelcontextprotocol/sdk/types.js';
 import { searchToolsTool } from './tools/tool-search.js';
-import { synthesizeContentTool, synthesizeContentToolDef } from './tools/synthesize.js';
+import { extractContentTool, extractContentToolDef } from './tools/extract-content.js';
+import { saveLearningTool, saveLearningToolDef } from './tools/save-learning.js';
 import { addNoteTool, addNoteToolDef } from './tools/notes.js';
 import { searchNotesTool } from './tools/search.js';
 import { readNoteTool } from './tools/read.js';
+import { workflowInstructionsResource, getWorkflowInstructions } from './resources/workflow-instructions.js';
 
 // Factory function to create MCP server instances (one per session)
 export function createMcpServer(): Server {
@@ -18,7 +22,8 @@ export function createMcpServer(): Server {
     },
     {
       capabilities: {
-        tools: {}
+        tools: {},
+        resources: {}
       }
     }
   );
@@ -40,7 +45,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['query']
       }
     },
-    synthesizeContentToolDef,
+    extractContentToolDef,
+    saveLearningToolDef,
     addNoteToolDef,
     {
       name: 'search_notes',
@@ -94,8 +100,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
-  if (name === 'synthesize_content') {
-    const result = await synthesizeContentTool(args as any);
+  if (name === 'extract_content') {
+    const result = await extractContentTool(args as { url: string });
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2)
+        }
+      ]
+    };
+  }
+
+  if (name === 'save_learning') {
+    const result = await saveLearningTool(args as { synthesis: string });
     return {
       content: [
         {
@@ -143,6 +161,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   throw new Error(`Unknown tool: ${name}`);
+});
+
+// List available resources
+server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+  resources: [
+    {
+      uri: workflowInstructionsResource.uri,
+      name: workflowInstructionsResource.name,
+      mimeType: workflowInstructionsResource.mimeType,
+      description: workflowInstructionsResource.description
+    }
+  ]
+}));
+
+// Read resource content
+server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  const { uri } = request.params;
+
+  if (uri === workflowInstructionsResource.uri) {
+    return {
+      contents: [
+        {
+          uri,
+          mimeType: workflowInstructionsResource.mimeType,
+          text: getWorkflowInstructions()
+        }
+      ]
+    };
+  }
+
+  throw new Error(`Unknown resource: ${uri}`);
 });
 
   return server;
