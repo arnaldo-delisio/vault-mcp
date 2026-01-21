@@ -26,11 +26,11 @@ async function searchNotes(query: string, limit: number = 10): Promise<SearchRes
   const safeLimit = Math.min(Math.max(1, limit), 20);
 
   try {
-    // Query vault_files with ILIKE for substring matching
+    // Query files with ILIKE for substring matching
     const { data, error } = await supabase
       .from('files')
-      .select('path, content, frontmatter, updated_at')
-      .ilike('content', `%${query}%`)
+      .select('path, body, frontmatter, updated_at')
+      .ilike('body', `%${query}%`)
       .order('updated_at', { ascending: false })
       .limit(safeLimit);
 
@@ -44,15 +44,15 @@ async function searchNotes(query: string, limit: number = 10): Promise<SearchRes
 
     // Format results with snippets
     return data.map(file => {
-      // Extract first 150 characters of content as snippet
-      const snippet = file.content ? file.content.slice(0, 150).trim() : '';
+      // Extract first 150 characters of body as snippet
+      const snippet = file.body ? file.body.slice(0, 150).trim() : '';
 
       // Extract tags from frontmatter JSONB if available
       const tags = file.frontmatter?.tags || [];
 
       return {
         path: file.path,
-        snippet: snippet + (file.content && file.content.length > 150 ? '...' : ''),
+        snippet: snippet + (file.body && file.body.length > 150 ? '...' : ''),
         tags: Array.isArray(tags) ? tags : [],
         updated_at: file.updated_at
       };

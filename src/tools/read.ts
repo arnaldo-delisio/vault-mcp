@@ -9,7 +9,7 @@ import yaml from 'js-yaml';
 
 interface FileData {
   path: string;
-  content: string;
+  body: string;
   frontmatter: Record<string, any> | null;
   updated_at: string;
 }
@@ -23,10 +23,10 @@ async function readNote(path: string): Promise<FileData | null> {
   }
 
   try {
-    // Query vault_files for exact path match
+    // Query files for exact path match
     const { data, error } = await supabase
       .from('files')
-      .select('path, content, frontmatter, updated_at')
+      .select('path, body, frontmatter, updated_at')
       .eq('path', path)
       .single();
 
@@ -75,7 +75,7 @@ export async function readNoteTool(args: { path: string }): Promise<string> {
     return `File not found: ${path}`;
   }
 
-  // Format output with frontmatter, separator, content
+  // Format output with frontmatter, separator, body
   let output = '';
 
   if (fileData.frontmatter && Object.keys(fileData.frontmatter).length > 0) {
@@ -84,7 +84,7 @@ export async function readNoteTool(args: { path: string }): Promise<string> {
     output += '\n---\n\n';
   }
 
-  output += fileData.content || '';
+  output += fileData.body || '';
 
   // Add metadata footer
   const updatedDate = new Date(fileData.updated_at).toLocaleString();

@@ -82,8 +82,14 @@ export async function synthesizeContentTool(args: SynthesizeContentArgs) {
 
   // Step 2: Synthesis save (final call - url + synthesis markdown provided)
   try {
-    // Re-extract content to get metadata (cached/fast if recently extracted)
-    const extracted = await extractContent(url);
+    // Try to get metadata from URL (best-effort, don't fail if extraction fails)
+    let extracted;
+    try {
+      extracted = await extractContent(url);
+    } catch {
+      // Extraction failed (video deleted, network issue, etc.) - continue without metadata
+      extracted = null;
+    }
 
     // Parse frontmatter from synthesis markdown
     const parsed = matter(synthesis);
@@ -105,7 +111,7 @@ export async function synthesizeContentTool(args: SynthesizeContentArgs) {
     }
 
     // Add source metadata if available
-    if (extracted.metadata) {
+    if (extracted?.metadata) {
       if (extracted.metadata.title && !frontmatter.source_title) {
         frontmatter.source_title = extracted.metadata.title;
       }
@@ -120,9 +126,9 @@ export async function synthesizeContentTool(args: SynthesizeContentArgs) {
     // Generate slug from source URL for filename
     // Use video ID or metadata title for better slugs
     let slug: string;
-    if (extracted.metadata?.videoId) {
+    if (extracted?.metadata?.videoId) {
       slug = `youtube-${extracted.metadata.videoId}`;
-    } else if (extracted.metadata?.title) {
+    } else if (extracted?.metadata?.title) {
       // Sanitize title for filename
       slug = extracted.metadata.title
         .toLowerCase()
@@ -152,12 +158,12 @@ export async function synthesizeContentTool(args: SynthesizeContentArgs) {
       .update(synthesis)
       .digest('hex');
 
-    // Save to Supabase vault_files table
+    // Save to Supabase files table
     const { error } = await supabase
       .from('files')
       .insert({
         path,
-        content: synthesis,
+        body: content_body,
         frontmatter, // JSONB column
         content_hash,
         updated_at: new Date().toISOString(),

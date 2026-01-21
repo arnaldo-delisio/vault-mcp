@@ -23,9 +23,9 @@ export async function addNoteTool(args: AddNoteArgs) {
     const path = `daily/${today}.md`;
 
     // Query for existing daily file
-    const { data: existingFile, error: queryError } = await supabase
+    const { data: existingFile, error: queryError} = await supabase
       .from('files')
-      .select('content, frontmatter')
+      .select('body, frontmatter')
       .eq('path', path)
       .single();
 
@@ -38,19 +38,20 @@ export async function addNoteTool(args: AddNoteArgs) {
     const timestamp = formattedContent.match(/## (\d{2}:\d{2})/)?.[1];
 
     if (existingFile) {
-      // File exists - append to existing content
-      const newContent = existingFile.content + formattedContent;
+      // File exists - append to existing body
+      const newBody = existingFile.body + formattedContent;
 
-      // Calculate new content hash
+      // Reconstruct full file with frontmatter for hash calculation
+      const fullContent = matter.stringify(newBody, existingFile.frontmatter);
       const content_hash = createHash('sha256')
-        .update(newContent)
+        .update(fullContent)
         .digest('hex');
 
       // Update existing row
       const { error: updateError } = await supabase
         .from('files')
         .update({
-          content: newContent,
+          body: newBody,
           content_hash,
           updated_at: new Date().toISOString()
         })
@@ -71,9 +72,10 @@ export async function addNoteTool(args: AddNoteArgs) {
     } else {
       // File doesn't exist - create new daily file
       const frontmatter = createDailyFrontmatter();
-      const fullContent = matter.stringify(formattedContent, frontmatter);
+      const body = formattedContent;
 
-      // Calculate content hash
+      // Reconstruct full content for hash calculation
+      const fullContent = matter.stringify(body, frontmatter);
       const content_hash = createHash('sha256')
         .update(fullContent)
         .digest('hex');
@@ -83,7 +85,7 @@ export async function addNoteTool(args: AddNoteArgs) {
         .from('files')
         .insert({
           path,
-          content: fullContent,
+          body,
           frontmatter, // JSONB column
           content_hash,
           updated_at: new Date().toISOString(),
