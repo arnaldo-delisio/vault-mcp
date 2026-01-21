@@ -4,6 +4,7 @@ import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WhisperService } from './whisper-service.js';
+import ytdl from 'ytdl-core';
 
 const TOKEN_THRESHOLD = 10000;
 const TRANSCRIPTS_DIR = join(tmpdir(), 'youtube-transcripts');
@@ -41,6 +42,30 @@ export async function extractContent(url: string): Promise<ExtractedContent> {
   if (match) {
     // Extract YouTube video ID
     const videoID = match[1];
+    const videoUrl = `https://www.youtube.com/watch?v=${videoID}`;
+
+    // Fetch video metadata
+    let metadata: ExtractedContent['metadata'] = {
+      videoId: videoID,
+      url: videoUrl,
+      language: 'en'
+    };
+
+    try {
+      const info = await ytdl.getInfo(videoUrl);
+      metadata = {
+        title: info.videoDetails.title,
+        author: info.videoDetails.author.name,
+        duration: parseInt(info.videoDetails.lengthSeconds, 10),
+        description: info.videoDetails.description || undefined,
+        videoId: videoID,
+        url: videoUrl,
+        language: 'en'
+      };
+    } catch (metaError) {
+      console.warn(`Failed to fetch metadata for ${videoID}:`, metaError);
+      // Continue without metadata - not critical
+    }
 
     // Try captions first, then Whisper fallback
     let transcript: string;
@@ -79,7 +104,8 @@ export async function extractContent(url: string): Promise<ExtractedContent> {
       // Small enough - return inline
       return {
         content: transcript,
-        type: 'video' as const
+        type: 'video' as const,
+        metadata
       };
     }
 
@@ -115,6 +141,7 @@ export async function extractContent(url: string): Promise<ExtractedContent> {
     return {
       content: preview,
       type: 'video' as const,
+      metadata,
       filePath,
       tokenCount,
       instructions: `Transcript too large (${tokenCount} tokens). Full transcript saved to: ${filePath}\n\nTo search: Use Grep tool with pattern\nTo read sections: Use Read tool with offset/limit${subtitles ? '\nTo navigate: File has timestamps every 60s ([MM:SS] format)' : ''}`
