@@ -22,24 +22,24 @@ interface ToolDefinition {
 // Tool registry with descriptions optimized for search
 const TOOL_REGISTRY: ToolDefinition[] = [
   {
-    name: 'synthesize_content',
-    description: 'Extract content from a URL (article or video), provide 3 key insights, ask contextual questions, and synthesize learnings into a markdown file with frontmatter. Captures web articles and YouTube videos.'
+    name: 'extract_content',
+    description: 'Extract content from a YouTube URL and save to the content library. Returns a preview and the file path. Use this first when user shares a video URL. The content is saved for future reference and semantic search.'
+  },
+  {
+    name: 'save_learning',
+    description: 'Save a user synthesis or learning to the vault. Requires markdown with YAML frontmatter including title, tags, and source fields. Use after extract_content when user wants to save their insights about the content.'
   },
   {
     name: 'add_note',
-    description: 'Append a timestamped note to today\'s daily journal file. Creates journal entry if it doesn\'t exist.'
+    description: 'Append a timestamped note to today\'s daily journal file. Creates the daily journal entry if it doesn\'t exist. Use for quick notes, thoughts, and journal entries.'
   },
   {
     name: 'search_notes',
-    description: 'Search vault content by keyword or phrase. Returns matching notes with context.'
+    description: 'Search vault content by keyword or phrase across all files. Returns matching notes with context snippets. Find related learnings, notes, and library content.'
   },
   {
     name: 'read_note',
-    description: 'Read a specific file from the vault by path.'
-  },
-  {
-    name: 'capture_learning',
-    description: 'Capture a quick learning or insight into the vault. Similar to synthesize_content but for manual insights instead of URLs.'
+    description: 'Read the full contents of a specific file from the vault by path. Retrieve complete note, learning, or library content.'
   }
 ];
 
