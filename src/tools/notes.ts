@@ -24,7 +24,7 @@ export async function addNoteTool(args: AddNoteArgs) {
 
     // Query for existing daily file
     const { data: existingFile, error: queryError } = await supabase
-      .from('vault_files')
+      .from('files')
       .select('content, frontmatter')
       .eq('path', path)
       .single();
@@ -48,7 +48,7 @@ export async function addNoteTool(args: AddNoteArgs) {
 
       // Update existing row
       const { error: updateError } = await supabase
-        .from('vault_files')
+        .from('files')
         .update({
           content: newContent,
           content_hash,
@@ -80,7 +80,7 @@ export async function addNoteTool(args: AddNoteArgs) {
 
       // Insert new row
       const { error: insertError } = await supabase
-        .from('vault_files')
+        .from('files')
         .insert({
           path,
           content: fullContent,

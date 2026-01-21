@@ -28,7 +28,7 @@ async function searchNotes(query: string, limit: number = 10): Promise<SearchRes
   try {
     // Query vault_files with ILIKE for substring matching
     const { data, error } = await supabase
-      .from('vault_files')
+      .from('files')
       .select('path, content, frontmatter, updated_at')
       .ilike('content', `%${query}%`)
       .order('updated_at', { ascending: false })

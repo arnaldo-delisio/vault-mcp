@@ -25,7 +25,7 @@ async function readNote(path: string): Promise<FileData | null> {
   try {
     // Query vault_files for exact path match
     const { data, error } = await supabase
-      .from('vault_files')
+      .from('files')
       .select('path, content, frontmatter, updated_at')
       .eq('path', path)
       .single();

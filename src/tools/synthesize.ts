@@ -90,7 +90,7 @@ export async function synthesizeContentTool(args: SynthesizeContentArgs) {
 
     // Save to Supabase vault_files table
     const { error } = await supabase
-      .from('vault_files')
+      .from('files')
       .insert({
         path,
         content: synthesis,

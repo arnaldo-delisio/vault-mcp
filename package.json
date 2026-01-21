@@ -27,6 +27,7 @@
     "ejs": "^4.0.1",
     "express": "^4.22.1",
     "express-session": "^1.18.2",
+    "gpt-tokenizer": "^3.4.0",
     "gray-matter": "^4.0.3",
     "mcp-oauth-password": "^0.2.2",
     "okapibm25": "^1.4.1",
