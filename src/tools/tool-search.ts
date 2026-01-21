@@ -43,10 +43,15 @@ const TOOL_REGISTRY: ToolDefinition[] = [
   }
 ];
 
-// OpenAI client for embeddings
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+// OpenAI client for embeddings - lazy initialized
+let openai: OpenAI | null = null;
+
+function getOpenAIClient(): OpenAI | null {
+  if (openai) return openai;
+  if (!process.env.OPENAI_API_KEY) return null;
+  openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  return openai;
+}
 
 // Pre-compute embeddings on server startup
 let embeddingsReady = false;
@@ -59,11 +64,18 @@ let embeddingError: Error | null = null;
 async function precomputeEmbeddings(): Promise<void> {
   if (embeddingsReady) return;
 
+  const client = getOpenAIClient();
+  if (!client) {
+    console.warn('OPENAI_API_KEY not set - tool search will use BM25-only mode');
+    embeddingError = new Error('OPENAI_API_KEY not set');
+    return;
+  }
+
   try {
     console.log('Pre-computing tool embeddings...');
     const descriptions = TOOL_REGISTRY.map(tool => tool.description);
-    
-    const response = await openai.embeddings.create({
+
+    const response = await client.embeddings.create({
       model: 'text-embedding-3-small',
       input: descriptions
     });
@@ -140,10 +152,11 @@ async function searchTools(query: string): Promise<ToolDefinition[]> {
   });
 
   // 2. Embeddings semantic search (if available)
-  if (embeddingsReady && !embeddingError) {
+  const client = getOpenAIClient();
+  if (embeddingsReady && !embeddingError && client) {
     try {
       // Generate query embedding
-      const queryEmbedding = await openai.embeddings.create({
+      const queryEmbedding = await client.embeddings.create({
         model: 'text-embedding-3-small',
         input: query
       });

@@ -9,7 +9,15 @@
 
 import OpenAI from 'openai';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Lazy-initialized OpenAI client
+let openai: OpenAI | null = null;
+
+function getOpenAIClient(): OpenAI | null {
+  if (openai) return openai;
+  if (!process.env.OPENAI_API_KEY) return null;
+  openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  return openai;
+}
 
 /**
  * Generate embedding for text using OpenAI text-embedding-3-small
@@ -19,9 +27,14 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
  * @returns 1536-dimension embedding vector
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
+  const client = getOpenAIClient();
+  if (!client) {
+    throw new Error('OPENAI_API_KEY not set - cannot generate embedding');
+  }
+
   const truncated = text.slice(0, 30000);
 
-  const response = await openai.embeddings.create({
+  const response = await client.embeddings.create({
     model: 'text-embedding-3-small',
     input: truncated
   });
