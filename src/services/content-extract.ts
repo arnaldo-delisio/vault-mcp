@@ -1,4 +1,4 @@
-import { getSubtitles } from 'youtube-caption-extractor';
+import { getSubtitles, getVideoDetails } from 'youtube-caption-extractor';
 import { encode } from 'gpt-tokenizer';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -44,7 +44,7 @@ export async function extractContent(url: string): Promise<ExtractedContent> {
     const videoID = match[1];
     const videoUrl = `https://www.youtube.com/watch?v=${videoID}`;
 
-    // Fetch video metadata
+    // Fetch video metadata - use youtube-caption-extractor (more reliable than ytdl)
     let metadata: ExtractedContent['metadata'] = {
       videoId: videoID,
       url: videoUrl,
@@ -52,19 +52,25 @@ export async function extractContent(url: string): Promise<ExtractedContent> {
     };
 
     try {
-      const info = await ytdl.getInfo(videoUrl);
+      const details = await getVideoDetails({ videoID, lang: 'en' });
       metadata = {
-        title: info.videoDetails.title,
-        author: info.videoDetails.author.name,
-        duration: parseInt(info.videoDetails.lengthSeconds, 10),
-        description: info.videoDetails.description || undefined,
+        title: details.title,
+        description: details.description || undefined,
         videoId: videoID,
         url: videoUrl,
         language: 'en'
       };
+
+      // Try ytdl for additional metadata (author, duration) if available
+      try {
+        const info = await ytdl.getInfo(videoUrl);
+        metadata.author = info.videoDetails.author.name;
+        metadata.duration = parseInt(info.videoDetails.lengthSeconds, 10);
+      } catch {
+        // ytdl failed, continue with basic metadata from getVideoDetails
+      }
     } catch (metaError) {
-      console.warn(`Failed to fetch metadata for ${videoID}:`, metaError);
-      // Continue without metadata - not critical
+      // Both methods failed - continue without metadata (not critical)
     }
 
     // Try captions first, then Whisper fallback
