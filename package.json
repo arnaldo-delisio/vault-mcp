@@ -22,6 +22,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
+    "@distube/ytdl-core": "^4.16.12",
     "@modelcontextprotocol/sdk": "^1.25.3",
     "@supabase/supabase-js": "^2.91.0",
     "ejs": "^4.0.1",
@@ -32,8 +33,7 @@
     "mcp-oauth-password": "^0.2.2",
     "okapibm25": "^1.4.1",
     "openai": "^6.16.0",
-    "youtube-caption-extractor": "^1.9.1",
-    "ytdl-core": "^4.11.5",
+    "youtube-transcript-plus": "^1.1.2",
     "zod": "^3.25.76"
   },
   "devDependencies": {
