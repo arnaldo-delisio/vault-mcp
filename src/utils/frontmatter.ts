@@ -7,12 +7,24 @@ import matter from 'gray-matter';
 /**
  * Create frontmatter for learning files
  */
-export function createLearningFrontmatter(sourceUrl: string, tags: string[]) {
+export function createLearningFrontmatter(
+  sourceUrl: string,
+  tags: string[],
+  metadata?: {
+    source_title?: string;
+    source_author?: string;
+    source_duration?: number;
+    source_url?: string;
+  }
+) {
   return {
     created_at: new Date().toISOString(),
     source_url: sourceUrl,
     tags,
-    type: 'learning'
+    type: 'learning',
+    ...(metadata?.source_title && { source_title: metadata.source_title }),
+    ...(metadata?.source_author && { source_author: metadata.source_author }),
+    ...(metadata?.source_duration && { source_duration_minutes: Math.floor(metadata.source_duration / 60) }),
   };
 }
 

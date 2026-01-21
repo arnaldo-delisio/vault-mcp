@@ -26,13 +26,50 @@ export async function synthesizeContentTool(args: SynthesizeContentArgs) {
     try {
       const extracted = await extractContent(url);
 
-      // Return content with instructions for Claude to provide insights and ask questions
+      // Check if transcript was written to file (large transcript case)
+      if (extracted.filePath) {
+        // Large transcript - return preview with metadata and instructions
+        let response = `# ${extracted.metadata?.title || 'YouTube Video'}\n\n`;
+        if (extracted.metadata) {
+          response += `**Author:** ${extracted.metadata.author}\n`;
+          response += `**Duration:** ${Math.floor((extracted.metadata.duration || 0) / 60)} minutes\n`;
+          response += `**URL:** ${extracted.metadata.url}\n\n`;
+        }
+        response += `**Preview** (first ~1500 tokens):\n\n${extracted.content}\n\n`;
+        response += `---\n\n${extracted.instructions}`;
+
+        return {
+          success: true,
+          stage: 'extraction',
+          contentType: extracted.type,
+          content: [{ type: 'text' as const, text: response }]
+        };
+      }
+
+      // Small transcript or article - return inline with metadata if available
+      let response = '';
+      if (extracted.metadata?.title) {
+        response = `# ${extracted.metadata.title}\n\n`;
+        if (extracted.metadata.author) {
+          response += `**Author:** ${extracted.metadata.author}\n`;
+        }
+        if (extracted.metadata.duration) {
+          response += `**Duration:** ${Math.floor(extracted.metadata.duration / 60)} minutes\n`;
+        }
+        if (extracted.metadata.url) {
+          response += `**URL:** ${extracted.metadata.url}\n\n`;
+        }
+        response += `**Transcript:**\n\n${extracted.content}\n\n`;
+      } else {
+        response = extracted.content + '\n\n';
+      }
+      response += `Ask clarifying questions, then call synthesize_content again with synthesis parameter.`;
+
       return {
         success: true,
         stage: 'extraction',
         contentType: extracted.type,
-        content: extracted.content,
-        instructions: 'Provide 3-5 key insights from this content, then ask at least one contextual question to understand the user\'s perspective before synthesizing (e.g., "How does this relate to your work?", "What aspect interests you most?", "What problem are you trying to solve?").'
+        content: [{ type: 'text' as const, text: response }]
       };
 
     } catch (error: any) {
@@ -45,6 +82,9 @@ export async function synthesizeContentTool(args: SynthesizeContentArgs) {
 
   // Step 2: Synthesis save (final call - url + synthesis markdown provided)
   try {
+    // Re-extract content to get metadata (cached/fast if recently extracted)
+    const extracted = await extractContent(url);
+
     // Parse frontmatter from synthesis markdown
     const parsed = matter(synthesis);
     const frontmatter = parsed.data;
@@ -64,20 +104,44 @@ export async function synthesizeContentTool(args: SynthesizeContentArgs) {
       frontmatter.tags = [];
     }
 
+    // Add source metadata if available
+    if (extracted.metadata) {
+      if (extracted.metadata.title && !frontmatter.source_title) {
+        frontmatter.source_title = extracted.metadata.title;
+      }
+      if (extracted.metadata.author && !frontmatter.source_author) {
+        frontmatter.source_author = extracted.metadata.author;
+      }
+      if (extracted.metadata.duration && !frontmatter.source_duration_minutes) {
+        frontmatter.source_duration_minutes = Math.floor(extracted.metadata.duration / 60);
+      }
+    }
+
     // Generate slug from source URL for filename
-    // Extract domain or video ID for more meaningful filenames
+    // Use video ID or metadata title for better slugs
     let slug: string;
-    const youtubeMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&]+)/);
-    if (youtubeMatch) {
-      slug = `youtube-${youtubeMatch[1]}`;
+    if (extracted.metadata?.videoId) {
+      slug = `youtube-${extracted.metadata.videoId}`;
+    } else if (extracted.metadata?.title) {
+      // Sanitize title for filename
+      slug = extracted.metadata.title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 50);
     } else {
-      // Use domain name from URL
-      try {
-        const urlObj = new URL(url);
-        const domain = urlObj.hostname.replace(/^www\./, '').replace(/\./g, '-');
-        slug = `${domain}-${Date.now()}`;
-      } catch {
-        slug = `learning-${Date.now()}`;
+      const youtubeMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&]+)/);
+      if (youtubeMatch) {
+        slug = `youtube-${youtubeMatch[1]}`;
+      } else {
+        // Use domain name from URL
+        try {
+          const urlObj = new URL(url);
+          const domain = urlObj.hostname.replace(/^www\./, '').replace(/\./g, '-');
+          slug = `${domain}-${Date.now()}`;
+        } catch {
+          slug = `learning-${Date.now()}`;
+        }
       }
     }
 
