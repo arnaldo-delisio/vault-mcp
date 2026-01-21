@@ -1,15 +1,14 @@
-import { getSubtitles, getVideoDetails } from 'youtube-caption-extractor';
 import { encode } from 'gpt-tokenizer';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { WhisperService } from './whisper-service.js';
-import ytdl from 'ytdl-core';
+import { YouTubeExtractor } from './extractors/youtube-extractor';
+import { formatTimestamp } from '../utils/youtube';
 
 const TOKEN_THRESHOLD = 10000;
 const TRANSCRIPTS_DIR = join(tmpdir(), 'youtube-transcripts');
 
-const whisperService = new WhisperService();
+const youtubeExtractor = new YouTubeExtractor();
 
 export interface ExtractedContent {
   content: string;
@@ -42,74 +41,30 @@ export async function extractContent(url: string): Promise<ExtractedContent> {
   if (match) {
     // Extract YouTube video ID
     const videoID = match[1];
-    const videoUrl = `https://www.youtube.com/watch?v=${videoID}`;
 
-    // Fetch video metadata - use youtube-caption-extractor (more reliable than ytdl)
-    let metadata: ExtractedContent['metadata'] = {
-      videoId: videoID,
-      url: videoUrl,
-      language: 'en'
+    // Use YouTubeExtractor for all extraction (metadata + transcript)
+    const result = await youtubeExtractor.getTranscript(videoID, {
+      language: 'en',
+      useWhisperFallback: true,  // Use Whisper if captions unavailable
+    });
+
+    const metadata: ExtractedContent['metadata'] = {
+      title: result.title,
+      author: result.author,
+      duration: result.duration,
+      description: result.description,
+      videoId: result.videoId,
+      url: result.videoUrl,
+      language: result.language,
     };
 
-    try {
-      const details = await getVideoDetails({ videoID, lang: 'en' });
-      metadata = {
-        title: details.title,
-        description: details.description || undefined,
-        videoId: videoID,
-        url: videoUrl,
-        language: 'en'
-      };
-
-      // Try ytdl for additional metadata (author, duration) if available
-      try {
-        const info = await ytdl.getInfo(videoUrl);
-        metadata.author = info.videoDetails.author.name;
-        metadata.duration = parseInt(info.videoDetails.lengthSeconds, 10);
-      } catch {
-        // ytdl failed, continue with basic metadata from getVideoDetails
-      }
-    } catch (metaError) {
-      // Both methods failed - continue without metadata (not critical)
-    }
-
-    // Try captions first, then Whisper fallback
-    let transcript: string;
-    let subtitles: any[] | null = null;
-
-    try {
-      // Fetch English subtitles
-      subtitles = await getSubtitles({ videoID, lang: 'en' });
-
-      if (!subtitles || subtitles.length === 0) {
-        throw new Error('No English captions available for this video');
-      }
-
-      // Join subtitle text into transcript
-      transcript = subtitles.map(s => s.text).join(' ');
-
-    } catch (captionError: any) {
-      // Try Whisper fallback if available
-      if (whisperService.isAvailable()) {
-        console.log(`No captions for ${videoID}, trying Whisper fallback...`);
-        try {
-          transcript = await whisperService.transcribe(videoID);
-        } catch (whisperError: any) {
-          throw new Error(`Both captions and Whisper failed: ${captionError.message}`);
-        }
-      } else {
-        // No fallback available
-        throw new Error(`No English captions available and Whisper fallback not configured (OPENAI_API_KEY missing). Try a video with captions enabled.`);
-      }
-    }
-
     // Count tokens to decide output method
-    const tokenCount = encode(transcript).length;
+    const tokenCount = encode(result.fullText).length;
 
     if (tokenCount <= TOKEN_THRESHOLD) {
       // Small enough - return inline
       return {
-        content: transcript,
+        content: result.fullText,
         type: 'video' as const,
         metadata
       };
@@ -119,30 +74,24 @@ export async function extractContent(url: string): Promise<ExtractedContent> {
     await mkdir(TRANSCRIPTS_DIR, { recursive: true });
     const filePath = join(TRANSCRIPTS_DIR, `${videoID}.txt`);
 
-    // Format with timestamps every 60 seconds (if we have subtitle timing)
+    // Format with timestamps every 60 seconds using segments
     let fileContent = '';
-    if (subtitles && subtitles.length > 0) {
-      let lastTimestamp = -60;
-      for (const subtitle of subtitles) {
-        const currentTime = Math.floor(parseFloat(subtitle.start));
-        if (currentTime - lastTimestamp >= 60) {
-          const minutes = Math.floor(currentTime / 60);
-          const seconds = currentTime % 60;
-          fileContent += `\n[${minutes}:${seconds.toString().padStart(2, '0')}]\n`;
-          lastTimestamp = currentTime;
-        }
-        fileContent += subtitle.text + ' ';
+    let lastTimestamp = -60;
+
+    for (const segment of result.segments) {
+      const currentTime = Math.floor(segment.start);
+      if (currentTime - lastTimestamp >= 60) {
+        fileContent += `\n[${formatTimestamp(currentTime)}]\n`;
+        lastTimestamp = currentTime;
       }
-    } else {
-      // Whisper transcript without timing - just write plain text
-      fileContent = transcript;
+      fileContent += segment.text + ' ';
     }
 
-    await writeFile(filePath, fileContent, 'utf-8');
+    await writeFile(filePath, fileContent.trim(), 'utf-8');
 
     // Generate preview (first ~1500 tokens)
-    const previewLength = Math.min(transcript.length, 8000); // Approximate 1500 tokens
-    const preview = transcript.slice(0, previewLength) + '...';
+    const previewLength = Math.min(result.fullText.length, 8000); // Approximate 1500 tokens
+    const preview = result.fullText.slice(0, previewLength) + '...';
 
     return {
       content: preview,
@@ -150,7 +99,7 @@ export async function extractContent(url: string): Promise<ExtractedContent> {
       metadata,
       filePath,
       tokenCount,
-      instructions: `Transcript too large (${tokenCount} tokens). Full transcript saved to: ${filePath}\n\nTo search: Use Grep tool with pattern\nTo read sections: Use Read tool with offset/limit${subtitles ? '\nTo navigate: File has timestamps every 60s ([MM:SS] format)' : ''}`
+      instructions: `Transcript too large (${tokenCount} tokens). Full transcript saved to: ${filePath}\n\nTo search: Use Grep tool with pattern\nTo read sections: Use Read tool with offset/limit\nTo navigate: File has timestamps every 60s ([HH:MM:SS] format)`
     };
 
   } else {
