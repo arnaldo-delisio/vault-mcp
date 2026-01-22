@@ -1,3 +1,6 @@
+// Set ytdl-core debug path before any imports
+process.env.YTDL_DEBUG_PATH = '/tmp';
+
 import express, { Request, Response } from 'express';
 import { setupOAuth, createAuthMiddleware } from 'mcp-oauth-password';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
