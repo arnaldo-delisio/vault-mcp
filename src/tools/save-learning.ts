@@ -127,7 +127,7 @@ export async function saveLearningTool(args: { synthesis: string }): Promise<Sav
       frontmatter,
       embedding,
       content_hash: contentHash,
-      user_id: 'authenticated-user' // TODO: Get from OAuth session
+      user_id: '00000000-0000-0000-0000-000000000001' // Single-user system
     });
 
     if (error) {

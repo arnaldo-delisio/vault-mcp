@@ -89,7 +89,7 @@ export async function addNoteTool(args: AddNoteArgs) {
           frontmatter, // JSONB column
           content_hash,
           updated_at: new Date().toISOString(),
-          user_id: 'authenticated-user' // TODO: Get from OAuth session in future enhancement
+          user_id: '00000000-0000-0000-0000-000000000001' // Single-user system
         });
 
       if (insertError) {

@@ -102,7 +102,7 @@ export async function extractContentTool(args: { url: string }): Promise<Extract
         frontmatter,
         embedding,
         content_hash: contentHash,
-        user_id: 'authenticated-user' // TODO: Get from OAuth session
+        user_id: '00000000-0000-0000-0000-000000000001' // Single-user system
       }, { onConflict: 'user_id,path' });
 
       if (upsertError) {
