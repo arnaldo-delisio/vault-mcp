@@ -20,12 +20,15 @@ export async function cleanupDebugFiles(): Promise<void> {
  * Extract video ID from YouTube URL or return if already an ID
  */
 export function extractVideoId(urlOrId: string): string {
+  // Strip query parameters if present (e.g., ?si=xxx from share links)
+  const cleanedInput = urlOrId.split('?')[0];
+
   // If already a video ID (11 characters, alphanumeric)
-  if (/^[a-zA-Z0-9_-]{11}$/.test(urlOrId)) {
-    return urlOrId;
+  if (/^[a-zA-Z0-9_-]{11}$/.test(cleanedInput)) {
+    return cleanedInput;
   }
 
-  // Try to extract from URL
+  // Try to extract from URL (use original input for full URL parsing)
   try {
     const videoId = ytdl.getVideoID(urlOrId);
     return videoId;
