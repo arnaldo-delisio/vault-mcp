@@ -48,10 +48,12 @@ async function searchNotes(
       }
     }
 
-    // Call hybrid_search RPC
+    // Call hybrid_search RPC with explicit user_id
+    // Service role key makes auth.uid() return NULL, so we pass explicit p_user_id
     const { data, error } = await supabase.rpc('hybrid_search', {
       query_text: query,
       query_embedding: queryEmbedding,
+      p_user_id: '00000000-0000-0000-0000-000000000001',
       match_count: safeLimit,
       content_type: contentType || null
     });
