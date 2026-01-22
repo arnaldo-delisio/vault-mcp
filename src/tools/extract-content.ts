@@ -40,8 +40,8 @@ export async function extractContentTool(args: { url: string }): Promise<Extract
     };
   }
 
-  // Check if YouTube URL
-  const youtubeMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\s]+)/);
+  // Check if YouTube URL - capture video ID only (stop at & or ? or whitespace)
+  const youtubeMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&?\s]+)/);
 
   if (youtubeMatch) {
     const videoId = youtubeMatch[1];
