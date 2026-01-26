@@ -10,7 +10,12 @@
  */
 
 import { createHash } from 'crypto';
+import { writeFileSync, unlinkSync, mkdtempSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { YouTubeExtractor } from '../services/extractors/youtube-extractor.js';
+import { ArticleExtractor } from '../services/extractors/article-extractor.js';
+import { GeminiExtractor } from '../services/extractors/gemini-extractor.js';
 import { isEmbeddingAvailable } from '../services/embeddings.js';
 import { processInlineIfSmall } from '../services/background-embeddings.js';
 import { supabase } from '../services/vault-client.js';
@@ -28,11 +33,40 @@ interface ExtractResult {
 }
 
 /**
- * Extract content from a URL and save to library
+ * Extract content from a URL or PDF file and save to library
  */
-export async function extractContentTool(args: { url: string }): Promise<ExtractResult> {
-  const { url } = args;
+export async function extractContentTool(args: {
+  url?: string;
+  file?: string;
+  fileName?: string;
+}): Promise<ExtractResult> {
+  const { url, file, fileName } = args;
 
+  // Validate input: must have either url or (file + fileName)
+  if (!url && !file) {
+    return {
+      success: false,
+      stage: 'delegate',
+      message: 'Invalid parameters',
+      error: 'Must provide either url or file parameter'
+    };
+  }
+
+  if (file && !fileName) {
+    return {
+      success: false,
+      stage: 'delegate',
+      message: 'Invalid parameters',
+      error: 'fileName is required when providing file'
+    };
+  }
+
+  // Handle PDF file upload
+  if (file && fileName) {
+    return await handlePdfFile(file, fileName);
+  }
+
+  // Handle URL extraction
   if (!url || typeof url !== 'string') {
     return {
       success: false,
@@ -160,6 +194,141 @@ export async function extractContentTool(args: { url: string }): Promise<Extract
 }
 
 /**
+ * Handle PDF file extraction
+ */
+async function handlePdfFile(
+  base64Content: string,
+  fileName: string
+): Promise<ExtractResult> {
+  // Generate slug from filename for library path
+  const slug = fileName
+    .replace(/\.pdf$/i, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  const libraryPath = `library/pdf/${slug}.md`;
+
+  // Check for existing extraction (deduplication)
+  const { data: existing } = await supabase
+    .from('files')
+    .select('path, frontmatter, body')
+    .eq('path', libraryPath)
+    .single();
+
+  if (existing) {
+    return {
+      success: true,
+      stage: 'cached',
+      path: existing.path,
+      preview: existing.body?.slice(0, 5000),
+      metadata: existing.frontmatter as Record<string, unknown>,
+      message: 'PDF already extracted. Use save_learning to save synthesis.'
+    };
+  }
+
+  // Extract with GeminiExtractor
+  let tempPath: string | null = null;
+  try {
+    // Create temp directory and write PDF
+    const tempDir = mkdtempSync(join(tmpdir(), 'pdf-extract-'));
+    tempPath = join(tempDir, fileName);
+    const pdfBuffer = Buffer.from(base64Content, 'base64');
+    writeFileSync(tempPath, pdfBuffer);
+
+    // Extract content
+    const extractor = new GeminiExtractor();
+    const result = await extractor.extractFromFile(tempPath, fileName);
+
+    // Build frontmatter per CONTEXT.md spec
+    const frontmatter = {
+      type: 'pdf',
+      title: result.title,
+      author: result.author,
+      published_date: result.publishedDate,
+      page_count: result.pageCount,
+      file_size_bytes: result.fileSize,
+      word_count: result.wordCount,
+      original_filename: result.originalFileName,
+      extracted_at: new Date().toISOString(),
+      tags: ['pdf', 'document']
+    };
+
+    // Build content hash
+    const contentHash = createHash('sha256')
+      .update(result.content)
+      .digest('hex');
+
+    const userId = '00000000-0000-0000-0000-000000000001'; // Single-user system
+
+    // Level 1: Save file immediately with pending status (always instant return)
+    const { data: fileData, error: upsertError } = await supabase
+      .from('files')
+      .upsert({
+        path: libraryPath,
+        body: result.content,
+        frontmatter,
+        embedding: null, // Deprecated: chunks stored in file_chunks table
+        content_hash: contentHash,
+        user_id: userId,
+        chunks_status: 'pending' // Start as pending
+      }, { onConflict: 'user_id,path' })
+      .select('id')
+      .single();
+
+    if (upsertError || !fileData) {
+      return {
+        success: false,
+        stage: 'extracted',
+        message: 'Extraction succeeded but file save failed',
+        error: upsertError?.message || 'No file data returned'
+      };
+    }
+
+    // Level 2: Try inline processing for small files (non-blocking)
+    let chunksStatus = 'pending';
+    if (isEmbeddingAvailable()) {
+      const embeddingResult = await processInlineIfSmall(fileData.id, result.content);
+      chunksStatus = embeddingResult.chunks_status;
+    }
+    // If not processed inline, Level 3 (Edge Function) will pick it up
+    // Level 4 (startup processor) is safety net
+
+    // Generate preview
+    const preview = generatePreview(result.content);
+
+    return {
+      success: true,
+      stage: 'extracted',
+      path: libraryPath,
+      preview,
+      metadata: frontmatter,
+      chunks_status: chunksStatus,
+      message: chunksStatus === 'complete'
+        ? 'PDF extracted with instant semantic search.'
+        : 'PDF extracted. Semantic search processing in background.'
+    };
+
+  } catch (error) {
+    return {
+      success: false,
+      stage: 'extracted',
+      message: 'PDF extraction failed',
+      error: error instanceof Error ? error.message : String(error)
+    };
+  } finally {
+    // Clean up temp file
+    if (tempPath) {
+      try {
+        unlinkSync(tempPath);
+      } catch (cleanupError) {
+        // Ignore cleanup errors
+      }
+    }
+  }
+}
+
+/**
  * Generate smart preview for transcript
  * Samples intro + middle + end for context
  */
@@ -182,15 +351,26 @@ function generatePreview(text: string, maxLength: number = 5000): string {
  */
 export const extractContentToolDef = {
   name: 'extract_content',
-  description: 'Extract content from a URL (YouTube video) and save to library. Returns preview and path. For non-YouTube URLs, use WebFetch tool directly then save_learning.',
+  description: 'Extract content from a URL (YouTube video) or PDF file and save to library. Returns preview and path. For non-YouTube URLs, use WebFetch tool directly then save_learning.',
   inputSchema: {
     type: 'object',
     properties: {
       url: {
         type: 'string',
         description: 'The URL to extract content from (YouTube video URL)'
+      },
+      file: {
+        type: 'string',
+        description: 'Base64-encoded PDF file content (alternative to url)'
+      },
+      fileName: {
+        type: 'string',
+        description: 'Original filename (required when file parameter is provided)'
       }
     },
-    required: ['url']
+    oneOf: [
+      { required: ['url'] },
+      { required: ['file', 'fileName'] }
+    ]
   }
 };
