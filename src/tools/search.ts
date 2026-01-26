@@ -48,9 +48,9 @@ async function searchNotes(
       }
     }
 
-    // Call hybrid_search RPC with explicit user_id
+    // Call hybrid_search_chunked RPC with explicit user_id
     // Service role key makes auth.uid() return NULL, so we pass explicit p_user_id
-    const { data, error } = await supabase.rpc('hybrid_search', {
+    const { data, error } = await supabase.rpc('hybrid_search_chunked', {
       query_text: query,
       query_embedding: queryEmbedding,
       p_user_id: '00000000-0000-0000-0000-000000000001',
@@ -66,44 +66,36 @@ async function searchNotes(
       return [];
     }
 
-    // Format results with context snippets
-    return data.map((file: {
+    // Fetch file metadata for tags and dates
+    // hybrid_search_chunked returns minimal fields (file_id, path, score, snippet)
+    // so we need to fetch frontmatter separately for tags and dates
+    const filePaths = data.map((r: { path: string }) => r.path);
+    const { data: filesMetadata } = await supabase
+      .from('files')
+      .select('path, frontmatter')
+      .in('path', filePaths);
+
+    const metadataMap = new Map(
+      (filesMetadata || []).map((f: { path: string; frontmatter: unknown }) => [
+        f.path,
+        f.frontmatter as { tags?: string[]; created_at?: string } | null
+      ])
+    );
+
+    // Format results with snippets from RPC
+    return data.map((result: {
       path: string;
-      body: string | null;
-      frontmatter: { tags?: string[]; created_at?: string } | null;
+      snippet: string | null;
       score: number;
     }) => {
-      // Find query in body and extract surrounding context
-      const lowerBody = file.body?.toLowerCase() || '';
-      const lowerQuery = query.toLowerCase();
-      const matchIndex = lowerBody.indexOf(lowerQuery);
-
-      let snippet: string;
-      if (matchIndex >= 0 && file.body) {
-        // Show context around the match with highlighting
-        const start = Math.max(0, matchIndex - 50);
-        const end = Math.min(file.body.length, matchIndex + query.length + 100);
-        const rawSnippet = file.body.slice(start, end);
-
-        // Bold the match (for display)
-        snippet = rawSnippet.replace(
-          new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'),
-          match => `**${match}**`
-        );
-
-        if (start > 0) snippet = '...' + snippet;
-        if (end < file.body.length) snippet = snippet + '...';
-      } else {
-        // Semantic match - no exact keyword, show start of content
-        snippet = file.body ? file.body.slice(0, 150).trim() + '...' : '';
-      }
+      const metadata = metadataMap.get(result.path);
 
       return {
-        path: file.path,
-        snippet,
-        tags: file.frontmatter?.tags || [],
-        updated_at: file.frontmatter?.created_at || new Date().toISOString(),
-        score: file.score
+        path: result.path,
+        snippet: result.snippet || '',
+        tags: metadata?.tags || [],
+        updated_at: metadata?.created_at || new Date().toISOString(),
+        score: result.score
       };
     });
   } catch (error) {
