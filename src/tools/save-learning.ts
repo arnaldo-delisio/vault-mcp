@@ -9,7 +9,7 @@
 
 import { createHash } from 'crypto';
 import matter from 'gray-matter';
-import { generateEmbedding, isEmbeddingAvailable } from '../services/embeddings.js';
+import { generateChunkedEmbeddings, isEmbeddingAvailable } from '../services/embeddings.js';
 import { supabase } from '../services/vault-client.js';
 
 interface SaveResult {
@@ -103,14 +103,14 @@ export async function saveLearningTool(args: { synthesis: string }): Promise<Sav
     type: fm.type || 'learning'
   };
 
-  // Generate embedding for semantic search
-  let embedding: number[] | null = null;
+  // Generate chunked embeddings for semantic search
+  let chunks = null;
   if (isEmbeddingAvailable()) {
     try {
-      embedding = await generateEmbedding(body);
+      chunks = await generateChunkedEmbeddings(body);
     } catch (error) {
-      console.warn('Failed to generate embedding:', error);
-      // Continue without embedding - can be generated later
+      console.warn('Failed to generate embeddings:', error);
+      // Continue without embeddings - can be generated later
     }
   }
 
@@ -119,20 +119,27 @@ export async function saveLearningTool(args: { synthesis: string }): Promise<Sav
     .update(synthesis)
     .digest('hex');
 
+  const userId = '00000000-0000-0000-0000-000000000001'; // Single-user system
+
   // Save to database
   try {
-    const { error } = await supabase.from('files').insert({
-      path,
-      body,
-      frontmatter,
-      embedding,
-      content_hash: contentHash,
-      user_id: '00000000-0000-0000-0000-000000000001' // Single-user system
-    });
+    // Insert file record
+    const { data: fileData, error: fileError } = await supabase
+      .from('files')
+      .insert({
+        path,
+        body,
+        frontmatter,
+        embedding: null, // Deprecated: chunks stored in file_chunks table
+        content_hash: contentHash,
+        user_id: userId
+      })
+      .select('id')
+      .single();
 
-    if (error) {
+    if (fileError || !fileData) {
       // Check for duplicate path
-      if (error.code === '23505') {
+      if (fileError?.code === '23505') {
         return {
           success: false,
           message: 'A learning with this title already exists',
@@ -142,8 +149,28 @@ export async function saveLearningTool(args: { synthesis: string }): Promise<Sav
       return {
         success: false,
         message: 'Database error',
-        error: error.message
+        error: fileError?.message || 'No file data returned'
       };
+    }
+
+    // Save chunks to file_chunks table if embeddings available
+    if (chunks && chunks.length > 0) {
+      const { error: chunksError } = await supabase
+        .from('file_chunks')
+        .insert(
+          chunks.map(c => ({
+            file_id: fileData.id,
+            chunk_index: c.chunk_index,
+            chunk_text: c.chunk_text,
+            embedding: c.embedding
+          }))
+        );
+
+      if (chunksError) {
+        // Non-fatal: file saved, but chunks failed
+        // Search will still work via keyword search, just no semantic search
+        console.error('Failed to save file chunks:', chunksError);
+      }
     }
 
     return {
