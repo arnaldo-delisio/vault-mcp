@@ -11,6 +11,7 @@ import { saveLearningTool, saveLearningToolDef } from './tools/save-learning.js'
 import { addNoteTool, addNoteToolDef } from './tools/notes.js';
 import { searchNotesTool } from './tools/search.js';
 import { readNoteTool } from './tools/read.js';
+import { generateMocTool, generateMocToolDef } from './tools/generate-moc.js';
 import { workflowInstructionsResource, getWorkflowInstructions } from './resources/workflow-instructions.js';
 
 // Factory function to create MCP server instances (one per session)
@@ -48,6 +49,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     extractContentToolDef,
     saveLearningToolDef,
     addNoteToolDef,
+    generateMocToolDef,
     {
       name: 'search_notes',
       description: 'Search vault content by keyword or phrase across all files.',
@@ -155,6 +157,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         {
           type: 'text',
           text: result
+        }
+      ]
+    };
+  }
+
+  if (name === 'generate_moc') {
+    const result = await generateMocTool(args as { topic: string; regenerate?: boolean });
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2)
         }
       ]
     };
