@@ -43,6 +43,7 @@
     "@types/express": "^5.0.6",
     "@types/express-session": "^1.18.2",
     "@types/js-yaml": "^4.0.9",
+    "@types/jsdom": "^27.0.0",
     "@types/node": "^25.0.9",
     "@types/pg": "^8.16.0",
     "dotenv": "^17.2.3",
