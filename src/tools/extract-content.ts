@@ -11,7 +11,7 @@
 
 import { createHash } from 'crypto';
 import { YouTubeExtractor } from '../services/extractors/youtube-extractor.js';
-import { generateEmbedding, isEmbeddingAvailable } from '../services/embeddings.js';
+import { generateChunkedEmbeddings, isEmbeddingAvailable } from '../services/embeddings.js';
 import { supabase } from '../services/vault-client.js';
 
 interface ExtractResult {
@@ -84,34 +84,60 @@ export async function extractContentTool(args: { url: string }): Promise<Extract
         tags: ['transcript', 'youtube']
       };
 
-      // Generate embedding for semantic search
-      let embedding: number[] | null = null;
-      if (isEmbeddingAvailable()) {
-        embedding = await generateEmbedding(transcript.fullText);
-      }
+      // Generate chunked embeddings for semantic search
+      const chunks = isEmbeddingAvailable()
+        ? await generateChunkedEmbeddings(transcript.fullText)
+        : null;
 
       // Build content hash
       const contentHash = createHash('sha256')
         .update(transcript.fullText)
         .digest('hex');
 
-      // Save to database with upsert (handles race conditions)
-      const { error: upsertError } = await supabase.from('files').upsert({
-        path: libraryPath,
-        body: transcript.fullText,
-        frontmatter,
-        embedding,
-        content_hash: contentHash,
-        user_id: '00000000-0000-0000-0000-000000000001' // Single-user system
-      }, { onConflict: 'user_id,path' });
+      const userId = '00000000-0000-0000-0000-000000000001'; // Single-user system
 
-      if (upsertError) {
+      // Save file to database with upsert (handles race conditions)
+      const { data: fileData, error: upsertError } = await supabase
+        .from('files')
+        .upsert({
+          path: libraryPath,
+          body: transcript.fullText,
+          frontmatter,
+          embedding: null, // Deprecated: chunks stored in file_chunks table
+          content_hash: contentHash,
+          user_id: userId
+        }, { onConflict: 'user_id,path' })
+        .select('id')
+        .single();
+
+      if (upsertError || !fileData) {
         return {
           success: false,
           stage: 'extracted',
-          message: 'Extraction succeeded but save failed',
-          error: upsertError.message
+          message: 'Extraction succeeded but file save failed',
+          error: upsertError?.message || 'No file data returned'
         };
+      }
+
+      // Save chunks to file_chunks table if embeddings available
+      if (chunks && chunks.length > 0) {
+        const { error: chunksError } = await supabase
+          .from('file_chunks')
+          .upsert(
+            chunks.map(c => ({
+              file_id: fileData.id,
+              chunk_index: c.chunk_index,
+              chunk_text: c.chunk_text,
+              embedding: c.embedding
+            })),
+            { onConflict: 'file_id,chunk_index' }
+          );
+
+        if (chunksError) {
+          // Non-fatal: file saved, but chunks failed
+          // Search will still work via keyword search, just no semantic search
+          console.error('Failed to save file chunks:', chunksError);
+        }
       }
 
       // Generate preview - smart sampling for long transcripts
