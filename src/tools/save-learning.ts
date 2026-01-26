@@ -12,6 +12,7 @@ import matter from 'gray-matter';
 import { isEmbeddingAvailable } from '../services/embeddings.js';
 import { processInlineIfSmall } from '../services/background-embeddings.js';
 import { supabase } from '../services/vault-client.js';
+import { AutoTagger } from '../services/auto-tagger.js';
 
 interface SaveResult {
   success: boolean;
@@ -19,6 +20,10 @@ interface SaveResult {
   chunks_status?: string;
   message: string;
   error?: string;
+  awaitingApproval?: boolean;
+  newTags?: string[];
+  existingTags?: string[];
+  retagCount?: number;
 }
 
 interface Frontmatter {
@@ -33,8 +38,12 @@ interface Frontmatter {
 /**
  * Save a synthesis to the vault
  */
-export async function saveLearningTool(args: { synthesis: string }): Promise<SaveResult> {
-  const { synthesis } = args;
+export async function saveLearningTool(args: {
+  synthesis: string;
+  approveNewTags?: boolean;
+  suggestedNewTags?: string[];
+}): Promise<SaveResult> {
+  const { synthesis, approveNewTags, suggestedNewTags } = args;
 
   if (!synthesis || typeof synthesis !== 'string') {
     return {
@@ -89,6 +98,66 @@ export async function saveLearningTool(args: { synthesis: string }): Promise<Sav
     };
   }
 
+  // Auto-tagging: suggest tags from taxonomy
+  const autoTagger = new AutoTagger();
+  let finalTags = fm.tags as string[];
+
+  // Only run auto-tagging if OpenAI is available
+  if (autoTagger.isAvailable()) {
+    try {
+      const { existingTags, newTags } = await autoTagger.suggestTags(body, fm.title!);
+
+      // Combine user-provided tags with suggested existing tags (deduplicate)
+      const allExistingTags = [...new Set([...finalTags, ...existingTags])];
+
+      // If new tags suggested and not yet approved, prompt user
+      if (newTags.length > 0 && !approveNewTags) {
+        const userId = '00000000-0000-0000-0000-000000000001';
+        const retagCount = await autoTagger.countRetagCandidates(newTags, supabase, userId);
+
+        return {
+          success: false,
+          awaitingApproval: true,
+          message: `New tags suggested: ${newTags.join(', ')}. This would re-tag approximately ${retagCount} existing learnings. Do you want to add these tags to the taxonomy?`,
+          newTags,
+          existingTags: allExistingTags,
+          retagCount
+        };
+      }
+
+      // If approval received, add new tags to taxonomy and include in final tags
+      if (approveNewTags && suggestedNewTags && suggestedNewTags.length > 0) {
+        await autoTagger.approveTags(suggestedNewTags);
+        finalTags = [...new Set([...allExistingTags, ...suggestedNewTags])];
+
+        // Trigger background re-tagging via Edge Function
+        const userId = '00000000-0000-0000-0000-000000000001';
+        const supabaseUrl = process.env.SUPABASE_URL;
+        const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+
+        if (supabaseUrl && supabaseAnonKey) {
+          // Fire and forget - don't wait for completion
+          fetch(`${supabaseUrl}/functions/v1/retag-learnings`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${supabaseAnonKey}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ newTags: suggestedNewTags, userId })
+          }).catch(error => {
+            console.error('Failed to trigger re-tagging:', error);
+          });
+        }
+      } else {
+        // No new tags or approval not needed, just use existing tags
+        finalTags = allExistingTags;
+      }
+    } catch (error) {
+      console.error('Auto-tagging failed, using user-provided tags:', error);
+      // Graceful degradation: continue with user-provided tags
+    }
+  }
+
   // Generate slug from title
   const slug = fm.title!
     .toLowerCase()
@@ -98,9 +167,10 @@ export async function saveLearningTool(args: { synthesis: string }): Promise<Sav
 
   const path = `learnings/${slug}.md`;
 
-  // Add default frontmatter fields
+  // Add default frontmatter fields with final computed tags
   const frontmatter: Frontmatter = {
     ...fm as Frontmatter,
+    tags: finalTags, // Use auto-tagged tags
     created_at: fm.created_at || new Date().toISOString(),
     type: fm.type || 'learning'
   };
@@ -152,13 +222,21 @@ export async function saveLearningTool(args: { synthesis: string }): Promise<Sav
       chunksStatus = result.chunks_status;
     }
 
+    // Build success message
+    let successMessage = chunksStatus === 'complete'
+      ? 'Learning saved with instant semantic search.'
+      : 'Learning saved. Semantic search processing in background.';
+
+    // Add re-tagging notification if new tags were approved
+    if (approveNewTags && suggestedNewTags && suggestedNewTags.length > 0) {
+      successMessage += ` Re-tagging existing learnings with new tags in background.`;
+    }
+
     return {
       success: true,
       path,
       chunks_status: chunksStatus,
-      message: chunksStatus === 'complete'
-        ? 'Learning saved with instant semantic search.'
-        : 'Learning saved. Semantic search processing in background.'
+      message: successMessage
     };
 
   } catch (error) {
@@ -175,13 +253,22 @@ export async function saveLearningTool(args: { synthesis: string }): Promise<Sav
  */
 export const saveLearningToolDef = {
   name: 'save_learning',
-  description: 'Save a synthesis to the vault. Requires frontmatter with title, tags, and source fields. Generates embedding for semantic search.',
+  description: 'Save a synthesis to the vault. Automatically suggests tags from taxonomy. If new tags are suggested, returns awaitingApproval=true for user to approve. Requires frontmatter with title, tags, and source fields.',
   inputSchema: {
     type: 'object',
     properties: {
       synthesis: {
         type: 'string',
         description: 'Markdown content with YAML frontmatter containing title, tags, and source'
+      },
+      approveNewTags: {
+        type: 'boolean',
+        description: 'Set to true to approve and add suggested new tags to taxonomy'
+      },
+      suggestedNewTags: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'The new tags to approve (must match tags from previous awaitingApproval response)'
       }
     },
     required: ['synthesis']
