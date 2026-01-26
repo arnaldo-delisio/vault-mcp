@@ -9,12 +9,14 @@
 
 import { createHash } from 'crypto';
 import matter from 'gray-matter';
-import { generateChunkedEmbeddings, isEmbeddingAvailable } from '../services/embeddings.js';
+import { isEmbeddingAvailable } from '../services/embeddings.js';
+import { processInlineIfSmall } from '../services/background-embeddings.js';
 import { supabase } from '../services/vault-client.js';
 
 interface SaveResult {
   success: boolean;
   path?: string;
+  chunks_status?: string;
   message: string;
   error?: string;
 }
@@ -103,17 +105,6 @@ export async function saveLearningTool(args: { synthesis: string }): Promise<Sav
     type: fm.type || 'learning'
   };
 
-  // Generate chunked embeddings for semantic search
-  let chunks = null;
-  if (isEmbeddingAvailable()) {
-    try {
-      chunks = await generateChunkedEmbeddings(body);
-    } catch (error) {
-      console.warn('Failed to generate embeddings:', error);
-      // Continue without embeddings - can be generated later
-    }
-  }
-
   // Build content hash
   const contentHash = createHash('sha256')
     .update(synthesis)
@@ -123,7 +114,7 @@ export async function saveLearningTool(args: { synthesis: string }): Promise<Sav
 
   // Save to database
   try {
-    // Insert file record
+    // Level 1: Save file immediately with pending status
     const { data: fileData, error: fileError } = await supabase
       .from('files')
       .insert({
@@ -132,7 +123,8 @@ export async function saveLearningTool(args: { synthesis: string }): Promise<Sav
         frontmatter,
         embedding: null, // Deprecated: chunks stored in file_chunks table
         content_hash: contentHash,
-        user_id: userId
+        user_id: userId,
+        chunks_status: 'pending' // Start as pending
       })
       .select('id')
       .single();
@@ -153,30 +145,20 @@ export async function saveLearningTool(args: { synthesis: string }): Promise<Sav
       };
     }
 
-    // Save chunks to file_chunks table if embeddings available
-    if (chunks && chunks.length > 0) {
-      const { error: chunksError } = await supabase
-        .from('file_chunks')
-        .insert(
-          chunks.map(c => ({
-            file_id: fileData.id,
-            chunk_index: c.chunk_index,
-            chunk_text: c.chunk_text,
-            embedding: c.embedding
-          }))
-        );
-
-      if (chunksError) {
-        // Non-fatal: file saved, but chunks failed
-        // Search will still work via keyword search, just no semantic search
-        console.error('Failed to save file chunks:', chunksError);
-      }
+    // Level 2: Try inline processing for small files
+    let chunksStatus = 'pending';
+    if (isEmbeddingAvailable()) {
+      const result = await processInlineIfSmall(fileData.id, body);
+      chunksStatus = result.chunks_status;
     }
 
     return {
       success: true,
       path,
-      message: `Learning saved to ${path}`
+      chunks_status: chunksStatus,
+      message: chunksStatus === 'complete'
+        ? 'Learning saved with instant semantic search.'
+        : 'Learning saved. Semantic search processing in background.'
     };
 
   } catch (error) {
