@@ -5,6 +5,13 @@
  * - ILIKE keyword matching for exact term hits
  * - pgvector embedding similarity for semantic matches
  * - Reciprocal Rank Fusion (RRF) for result ranking
+ *
+ * Supports advanced filters:
+ * - file_type: library, learnings, daily, mocs
+ * - tags: array (OR within array)
+ * - author: matches author field OR guests array
+ * - source: youtube, article, pdf (library only)
+ * - after/before: date range filtering
  */
 
 import { supabase } from '../services/vault-client.js';
@@ -18,105 +25,312 @@ interface SearchResult {
   score?: number;  // RRF score from hybrid search
 }
 
+interface SearchFilters {
+  file_type?: 'library' | 'learnings' | 'daily' | 'mocs';
+  tags?: string[];
+  author?: string;
+  source?: 'youtube' | 'article' | 'pdf';
+  after?: string;  // YYYY-MM-DD
+  before?: string; // YYYY-MM-DD
+}
+
 /**
- * Search vault files using hybrid keyword + semantic search
+ * Search vault files using hybrid keyword + semantic search with advanced filters
  *
- * @param query - Search query text
+ * @param query - Search query text (optional for filtered browse)
  * @param limit - Maximum results (1-20)
- * @param contentType - Optional filter: 'transcript', 'learning', etc.
+ * @param filters - Advanced filters
  */
 async function searchNotes(
-  query: string,
+  query: string | null,
   limit: number = 10,
-  contentType?: string
+  filters?: SearchFilters
 ): Promise<SearchResult[]> {
-  if (!query || typeof query !== 'string') {
-    throw new Error('Invalid query parameter: must be a non-empty string');
-  }
 
   // Enforce max limit to prevent overwhelming mobile context
   const safeLimit = Math.min(Math.max(1, limit), 20);
 
   try {
-    // Generate query embedding for semantic search
-    let queryEmbedding: number[] | null = null;
-    if (isEmbeddingAvailable()) {
-      try {
-        queryEmbedding = await generateEmbedding(query);
-      } catch (err) {
-        console.warn('Failed to generate query embedding, falling back to keyword-only:', err);
-      }
+    // Validate date filters
+    if (filters?.after && !isValidDate(filters.after)) {
+      throw new Error(`Invalid after date: must be YYYY-MM-DD format`);
+    }
+    if (filters?.before && !isValidDate(filters.before)) {
+      throw new Error(`Invalid before date: must be YYYY-MM-DD format`);
     }
 
-    // Call hybrid_search_chunked RPC with explicit user_id
-    // Service role key makes auth.uid() return NULL, so we pass explicit p_user_id
-    const { data, error } = await supabase.rpc('hybrid_search_chunked', {
-      query_text: query,
-      query_embedding: queryEmbedding,
-      p_user_id: '00000000-0000-0000-0000-000000000001',
-      match_count: safeLimit,
-      content_type: contentType || null
-    });
-
-    if (error) {
-      throw new Error(`Hybrid search failed: ${error.message}`);
+    // If query provided: use hybrid search with filters
+    if (query) {
+      return await hybridSearchWithFilters(query, safeLimit, filters);
     }
 
-    if (!data || data.length === 0) {
-      return [];
-    }
-
-    // Fetch file metadata for tags and dates
-    // hybrid_search_chunked returns minimal fields (file_id, path, score, snippet)
-    // so we need to fetch frontmatter separately for tags and dates
-    const filePaths = data.map((r: { path: string }) => r.path);
-    const { data: filesMetadata } = await supabase
-      .from('files')
-      .select('path, frontmatter')
-      .in('path', filePaths);
-
-    const metadataMap = new Map(
-      (filesMetadata || []).map((f: { path: string; frontmatter: unknown }) => [
-        f.path,
-        f.frontmatter as { tags?: string[]; created_at?: string } | null
-      ])
-    );
-
-    // Format results with snippets from RPC
-    return data.map((result: {
-      path: string;
-      snippet: string | null;
-      score: number;
-    }) => {
-      const metadata = metadataMap.get(result.path);
-
-      return {
-        path: result.path,
-        snippet: result.snippet || '',
-        tags: metadata?.tags || [],
-        updated_at: metadata?.created_at || new Date().toISOString(),
-        score: result.score
-      };
-    });
+    // No query: filtered browse (direct SELECT with filters)
+    return await filteredBrowse(safeLimit, filters);
   } catch (error) {
     throw new Error(`Search failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
 /**
+ * Validate YYYY-MM-DD date format
+ */
+function isValidDate(dateStr: string): boolean {
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(dateStr)) return false;
+
+  const date = new Date(dateStr);
+  return date instanceof Date && !isNaN(date.getTime());
+}
+
+/**
+ * Build SQL filters from SearchFilters object
+ */
+function buildFilters(builder: any, filters?: SearchFilters, userId: string = '00000000-0000-0000-0000-000000000001') {
+  // Always filter by user_id
+  builder = builder.eq('user_id', userId);
+
+  if (!filters) return builder;
+
+  // File type filter (path prefix)
+  if (filters.file_type) {
+    builder = builder.like('path', `${filters.file_type}/%`);
+  }
+
+  // Tag filter (array contains ANY of provided tags)
+  // Use overlaps for JSONB array: checks if any tag in filters matches any tag in frontmatter
+  if (filters.tags && filters.tags.length > 0) {
+    builder = builder.overlaps('frontmatter->tags', filters.tags);
+  }
+
+  // Author filter (author field OR guests array)
+  if (filters.author) {
+    // Use .or() with proper PostgREST filter syntax
+    builder = builder.or(
+      `frontmatter->>author.eq.${filters.author},frontmatter->guests.cs.{${filters.author}}`
+    );
+  }
+
+  // Source type filter (library only)
+  if (filters.source) {
+    builder = builder.like('path', 'library/%');
+    builder = builder.eq('frontmatter->>source_type', filters.source);
+  }
+
+  // Date range filters
+  if (filters.after || filters.before) {
+    // For library files, prefer published_date if available, otherwise use created_at
+    // For other files, always use created_at
+    const isLibrary = filters.file_type === 'library' ||
+                      (filters.source !== undefined); // source filter implies library
+
+    if (isLibrary) {
+      // For library files: use published_date when filtering by date
+      if (filters.after) {
+        builder = builder.gte('frontmatter->>published_date', filters.after);
+      }
+      if (filters.before) {
+        builder = builder.lte('frontmatter->>published_date', filters.before);
+      }
+    } else {
+      // For non-library files: use created_at
+      if (filters.after) {
+        builder = builder.gte('created_at', filters.after);
+      }
+      if (filters.before) {
+        builder = builder.lte('created_at', filters.before);
+      }
+    }
+  }
+
+  return builder;
+}
+
+/**
+ * Extract snippet from content (150 chars around match or first 150 chars)
+ */
+function extractSnippet(content: string, query?: string): string {
+  if (!content) return '';
+
+  const maxLength = 150;
+
+  if (!query) {
+    return content.substring(0, maxLength) + (content.length > maxLength ? '...' : '');
+  }
+
+  // Find first occurrence of any query term (case-insensitive)
+  const terms = query.toLowerCase().split(/\s+/);
+  const contentLower = content.toLowerCase();
+
+  let earliestMatch = -1;
+  for (const term of terms) {
+    const index = contentLower.indexOf(term);
+    if (index !== -1 && (earliestMatch === -1 || index < earliestMatch)) {
+      earliestMatch = index;
+    }
+  }
+
+  if (earliestMatch === -1) {
+    // No match found, return first 150 chars
+    return content.substring(0, maxLength) + (content.length > maxLength ? '...' : '');
+  }
+
+  // Extract ~150 chars centered on match
+  const start = Math.max(0, earliestMatch - 50);
+  const end = Math.min(content.length, start + maxLength);
+  const snippet = content.substring(start, end);
+
+  return (start > 0 ? '...' : '') + snippet + (end < content.length ? '...' : '');
+}
+
+/**
+ * Hybrid search with filters (when query provided)
+ */
+async function hybridSearchWithFilters(
+  query: string,
+  limit: number,
+  filters?: SearchFilters
+): Promise<SearchResult[]> {
+  // People search pattern: add author to query for body text matching
+  let searchQuery = query;
+  if (filters?.author) {
+    searchQuery = `${query} ${filters.author}`;
+  }
+
+  // Generate query embedding for semantic search
+  let queryEmbedding: number[] | null = null;
+  if (isEmbeddingAvailable()) {
+    try {
+      queryEmbedding = await generateEmbedding(searchQuery);
+    } catch (err) {
+      console.warn('Failed to generate query embedding, falling back to keyword-only:', err);
+    }
+  }
+
+  // Call hybrid_search_chunked RPC
+  // Note: RPC doesn't support filters directly, so we'll filter results afterward
+  const { data, error } = await supabase.rpc('hybrid_search_chunked', {
+    query_text: searchQuery,
+    query_embedding: queryEmbedding,
+    p_user_id: '00000000-0000-0000-0000-000000000001',
+    match_count: limit * 3,  // Fetch more to account for filtering
+    content_type: null
+  });
+
+  if (error) {
+    throw new Error(`Hybrid search failed: ${error.message}`);
+  }
+
+  if (!data || data.length === 0) {
+    return [];
+  }
+
+  // Fetch file metadata for filtering and tags
+  const filePaths = data.map((r: { path: string }) => r.path);
+  let query_builder = supabase
+    .from('files')
+    .select('path, frontmatter, created_at, content')
+    .in('path', filePaths);
+
+  // Apply filters to metadata fetch
+  query_builder = buildFilters(query_builder, filters);
+
+  const { data: filesMetadata, error: metaError } = await query_builder;
+
+  if (metaError) {
+    throw new Error(`Failed to fetch metadata: ${metaError.message}`);
+  }
+
+  // Create map of filtered files
+  const metadataMap = new Map(
+    (filesMetadata || []).map((f: any) => [f.path, f])
+  );
+
+  // Filter and format results
+  const results = data
+    .filter((result: { path: string }) => metadataMap.has(result.path))
+    .slice(0, limit)
+    .map((result: { path: string; snippet: string | null; score: number }) => {
+      const metadata = metadataMap.get(result.path);
+
+      return {
+        path: result.path,
+        snippet: result.snippet || extractSnippet(metadata?.content || '', query),
+        tags: metadata?.frontmatter?.tags || [],
+        updated_at: metadata?.created_at || new Date().toISOString(),
+        score: result.score
+      };
+    });
+
+  return results;
+}
+
+/**
+ * Filtered browse (no query, just filters)
+ */
+async function filteredBrowse(
+  limit: number,
+  filters?: SearchFilters
+): Promise<SearchResult[]> {
+  let query_builder = supabase
+    .from('files')
+    .select('path, frontmatter, created_at, content')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  // Apply filters
+  query_builder = buildFilters(query_builder, filters);
+
+  const { data, error } = await query_builder;
+
+  if (error) {
+    throw new Error(`Filtered browse failed: ${error.message}`);
+  }
+
+  if (!data || data.length === 0) {
+    return [];
+  }
+
+  // Format results (no scores for browse)
+  return data.map((file: any) => ({
+    path: file.path,
+    snippet: extractSnippet(file.content || ''),
+    tags: file.frontmatter?.tags || [],
+    updated_at: file.created_at || new Date().toISOString(),
+    score: undefined
+  }));
+}
+
+/**
  * MCP tool handler for search_notes
  */
 export async function searchNotesTool(args: {
-  query: string;
+  query?: string;
   limit?: number;
-  type?: string;
+  file_type?: 'library' | 'learnings' | 'daily' | 'mocs';
+  tags?: string[];
+  author?: string;
+  source?: 'youtube' | 'article' | 'pdf';
+  after?: string;
+  before?: string;
 }): Promise<string> {
-  const { query, limit, type } = args;
+  const { query, limit, file_type, tags, author, source, after, before } = args;
 
-  const results = await searchNotes(query, limit, type);
+  // Build filters
+  const filters: SearchFilters = {};
+  if (file_type) filters.file_type = file_type;
+  if (tags && tags.length > 0) filters.tags = tags;
+  if (author) filters.author = author;
+  if (source) filters.source = source;
+  if (after) filters.after = after;
+  if (before) filters.before = before;
+
+  const results = await searchNotes(query || null, limit, filters);
 
   if (results.length === 0) {
-    return `No files found matching query: "${query}"`;
+    const filterDesc = Object.keys(filters).length > 0 ? ' with applied filters' : '';
+    return query
+      ? `No files found matching query: "${query}"${filterDesc}`
+      : `No files found${filterDesc}`;
   }
 
   // Format results as readable text
@@ -128,7 +342,8 @@ export async function searchNotesTool(args: {
    ${result.snippet}`;
   }).join('\n\n');
 
-  return `Found ${results.length} result${results.length === 1 ? '' : 's'}:\n\n${formattedResults}`;
+  const modeDesc = query ? 'search' : 'browse';
+  return `Found ${results.length} result${results.length === 1 ? '' : 's'} (${modeDesc}):\n\n${formattedResults}`;
 }
 
 /**
@@ -136,23 +351,46 @@ export async function searchNotesTool(args: {
  */
 export const searchNotesToolDef = {
   name: 'search_notes',
-  description: 'Search vault content using hybrid keyword + semantic search. Returns relevance-ranked results combining exact keyword matches and semantic similarity.',
+  description: 'Search vault content using hybrid keyword + semantic search with advanced filters. Can search with query (hybrid keyword + semantic) or browse by filters only. People search: pass name to both author and query for BY + ABOUT results.',
   inputSchema: {
     type: 'object',
     properties: {
       query: {
         type: 'string',
-        description: 'Search query (keywords or natural language)'
+        description: 'Search query (keywords or natural language). Optional - can filter without query for filtered browse.'
+      },
+      file_type: {
+        type: 'string',
+        enum: ['library', 'learnings', 'daily', 'mocs'],
+        description: 'Filter by file location'
+      },
+      tags: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Filter by tags (OR within array)'
+      },
+      author: {
+        type: 'string',
+        description: 'Filter by author name (matches author field OR guests array). For people search, also add to query.'
+      },
+      source: {
+        type: 'string',
+        enum: ['youtube', 'article', 'pdf'],
+        description: 'Filter by source type (library files only)'
+      },
+      after: {
+        type: 'string',
+        description: 'Filter by date after (YYYY-MM-DD, uses published_date for library, created_at for others)'
+      },
+      before: {
+        type: 'string',
+        description: 'Filter by date before (YYYY-MM-DD)'
       },
       limit: {
         type: 'number',
         description: 'Max results (1-20, default 10)'
-      },
-      type: {
-        type: 'string',
-        description: 'Filter by content type: transcript, learning, note, etc.'
       }
     },
-    required: ['query']
+    required: []
   }
 };
