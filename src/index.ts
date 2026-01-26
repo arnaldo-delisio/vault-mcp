@@ -7,6 +7,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { randomUUID } from 'crypto';
 import { createMcpServer } from './mcp-server.js';
+import { startupProcessor } from './services/background-embeddings.js';
 
 // Validate required environment variables
 const requiredEnvVars = [
@@ -165,6 +166,12 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`vault-mcp listening on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/`);
   console.log(`OAuth endpoints ready at ${process.env.SERVER_URL}`);
+
+  // Level 4: Process any stuck pending embeddings on startup (safety net)
+  startupProcessor().catch(err => {
+    console.error('Startup processor failed:', err);
+    // Non-fatal: server continues even if startup processing fails
+  });
 });
 
 // Export for testing
