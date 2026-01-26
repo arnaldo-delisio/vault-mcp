@@ -13,6 +13,7 @@ import { isEmbeddingAvailable } from '../services/embeddings.js';
 import { processInlineIfSmall } from '../services/background-embeddings.js';
 import { supabase } from '../services/vault-client.js';
 import { AutoTagger } from '../services/auto-tagger.js';
+import { MOCGenerator } from '../services/moc-generator.js';
 
 interface SaveResult {
   success: boolean;
@@ -222,6 +223,22 @@ export async function saveLearningTool(args: {
       chunksStatus = result.chunks_status;
     }
 
+    // Check MOC threshold after saving
+    const mocGenerator = new MOCGenerator(supabase, userId);
+    const { shouldGenerate, counts } = await mocGenerator.checkThreshold(finalTags);
+
+    // Generate MOCs for topics that reached threshold
+    const generatedMocs: string[] = [];
+    for (const topic of shouldGenerate) {
+      try {
+        await mocGenerator.generateMOC(topic);
+        generatedMocs.push(`${topic} (${counts[topic]} learnings)`);
+      } catch (error) {
+        console.error(`Failed to generate MOC for ${topic}:`, error);
+        // Non-fatal: continue even if MOC generation fails
+      }
+    }
+
     // Build success message
     let successMessage = chunksStatus === 'complete'
       ? 'Learning saved with instant semantic search.'
@@ -230,6 +247,11 @@ export async function saveLearningTool(args: {
     // Add re-tagging notification if new tags were approved
     if (approveNewTags && suggestedNewTags && suggestedNewTags.length > 0) {
       successMessage += ` Re-tagging existing learnings with new tags in background.`;
+    }
+
+    // Add MOC generation notification if any generated
+    if (generatedMocs.length > 0) {
+      successMessage += ` MOCs created for: ${generatedMocs.join(', ')}. Check mocs/ folder.`;
     }
 
     return {
