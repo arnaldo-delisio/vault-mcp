@@ -11,7 +11,8 @@
 
 import { createHash } from 'crypto';
 import { YouTubeExtractor } from '../services/extractors/youtube-extractor.js';
-import { generateChunkedEmbeddings, isEmbeddingAvailable } from '../services/embeddings.js';
+import { isEmbeddingAvailable } from '../services/embeddings.js';
+import { processInlineIfSmall } from '../services/background-embeddings.js';
 import { supabase } from '../services/vault-client.js';
 
 interface ExtractResult {
@@ -21,6 +22,7 @@ interface ExtractResult {
   preview?: string;
   metadata?: Record<string, unknown>;
   tokenCount?: number;
+  chunks_status?: string;
   message: string;
   error?: string;
 }
@@ -84,11 +86,6 @@ export async function extractContentTool(args: { url: string }): Promise<Extract
         tags: ['transcript', 'youtube']
       };
 
-      // Generate chunked embeddings for semantic search
-      const chunks = isEmbeddingAvailable()
-        ? await generateChunkedEmbeddings(transcript.fullText)
-        : null;
-
       // Build content hash
       const contentHash = createHash('sha256')
         .update(transcript.fullText)
@@ -96,7 +93,7 @@ export async function extractContentTool(args: { url: string }): Promise<Extract
 
       const userId = '00000000-0000-0000-0000-000000000001'; // Single-user system
 
-      // Save file to database with upsert (handles race conditions)
+      // Level 1: Save file immediately with pending status (always instant return)
       const { data: fileData, error: upsertError } = await supabase
         .from('files')
         .upsert({
@@ -105,7 +102,8 @@ export async function extractContentTool(args: { url: string }): Promise<Extract
           frontmatter,
           embedding: null, // Deprecated: chunks stored in file_chunks table
           content_hash: contentHash,
-          user_id: userId
+          user_id: userId,
+          chunks_status: 'pending' // Start as pending
         }, { onConflict: 'user_id,path' })
         .select('id')
         .single();
@@ -119,26 +117,14 @@ export async function extractContentTool(args: { url: string }): Promise<Extract
         };
       }
 
-      // Save chunks to file_chunks table if embeddings available
-      if (chunks && chunks.length > 0) {
-        const { error: chunksError } = await supabase
-          .from('file_chunks')
-          .upsert(
-            chunks.map(c => ({
-              file_id: fileData.id,
-              chunk_index: c.chunk_index,
-              chunk_text: c.chunk_text,
-              embedding: c.embedding
-            })),
-            { onConflict: 'file_id,chunk_index' }
-          );
-
-        if (chunksError) {
-          // Non-fatal: file saved, but chunks failed
-          // Search will still work via keyword search, just no semantic search
-          console.error('Failed to save file chunks:', chunksError);
-        }
+      // Level 2: Try inline processing for small files (non-blocking)
+      let chunksStatus = 'pending';
+      if (isEmbeddingAvailable()) {
+        const result = await processInlineIfSmall(fileData.id, transcript.fullText);
+        chunksStatus = result.chunks_status;
       }
+      // If not processed inline, Level 3 (Edge Function) will pick it up
+      // Level 4 (startup processor) is safety net
 
       // Generate preview - smart sampling for long transcripts
       const preview = generatePreview(transcript.fullText);
@@ -149,7 +135,10 @@ export async function extractContentTool(args: { url: string }): Promise<Extract
         path: libraryPath,
         preview,
         metadata: frontmatter,
-        message: 'Content extracted and saved to library. Review and save synthesis.'
+        chunks_status: chunksStatus,
+        message: chunksStatus === 'complete'
+          ? 'Content extracted with instant semantic search.'
+          : 'Content extracted. Semantic search processing in background.'
       };
 
     } catch (error) {
