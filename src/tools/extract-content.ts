@@ -3,10 +3,10 @@
  *
  * Replaces synthesize_content's extraction stage with:
  * - Deduplication (returns cached result if exists)
- * - Library storage (library/youtube/{videoId}.md)
+ * - Library storage (library/youtube/, library/articles/, library/pdf/)
  * - Embedding generation for semantic search
  *
- * Non-YouTube URLs delegate to WebFetch tool.
+ * Supports YouTube videos, web articles, and PDFs.
  */
 
 import { createHash } from 'crypto';
@@ -185,12 +185,110 @@ export async function extractContentTool(args: {
     }
   }
 
-  // Non-YouTube URLs: delegate to WebFetch
-  return {
-    success: true,
-    stage: 'delegate',
-    message: 'Use WebFetch to extract content from this URL, then call save_learning with the synthesis.'
-  };
+  // Non-YouTube URLs: extract as article
+  try {
+    const extractor = new ArticleExtractor();
+    const article = await extractor.extractFromUrl(url);
+
+    // Generate slug for library path
+    const slug = extractor.generateSlug(url);
+    const libraryPath = `library/articles/${slug}.md`;
+
+    // Check for existing extraction (deduplication)
+    const { data: existing } = await supabase
+      .from('files')
+      .select('path, frontmatter, body')
+      .eq('path', libraryPath)
+      .single();
+
+    if (existing) {
+      return {
+        success: true,
+        stage: 'cached',
+        path: existing.path,
+        preview: existing.body?.slice(0, 5000),
+        metadata: existing.frontmatter as Record<string, unknown>,
+        message: 'Article already extracted. Use save_learning to save synthesis.'
+      };
+    }
+
+    // Build frontmatter per CONTEXT.md spec
+    const frontmatter = {
+      type: 'article',
+      title: article.title,
+      source_url: article.originalUrl,
+      source_author: article.author,
+      source_site: article.siteName,
+      published_date: article.publishedDate,
+      word_count: article.wordCount,
+      excerpt: article.excerpt,
+      extracted_at: new Date().toISOString(),
+      tags: ['article', 'web']
+    };
+
+    // Build content hash
+    const contentHash = createHash('sha256')
+      .update(article.content)
+      .digest('hex');
+
+    const userId = '00000000-0000-0000-0000-000000000001'; // Single-user system
+
+    // Level 1: Save file immediately with pending status (always instant return)
+    const { data: fileData, error: upsertError } = await supabase
+      .from('files')
+      .upsert({
+        path: libraryPath,
+        body: article.content,
+        frontmatter,
+        embedding: null, // Deprecated: chunks stored in file_chunks table
+        content_hash: contentHash,
+        user_id: userId,
+        chunks_status: 'pending' // Start as pending
+      }, { onConflict: 'user_id,path' })
+      .select('id')
+      .single();
+
+    if (upsertError || !fileData) {
+      return {
+        success: false,
+        stage: 'extracted',
+        message: 'Extraction succeeded but file save failed',
+        error: upsertError?.message || 'No file data returned'
+      };
+    }
+
+    // Level 2: Try inline processing for small files (non-blocking)
+    let chunksStatus = 'pending';
+    if (isEmbeddingAvailable()) {
+      const result = await processInlineIfSmall(fileData.id, article.content);
+      chunksStatus = result.chunks_status;
+    }
+    // If not processed inline, Level 3 (Edge Function) will pick it up
+    // Level 4 (startup processor) is safety net
+
+    // Generate preview
+    const preview = generatePreview(article.content);
+
+    return {
+      success: true,
+      stage: 'extracted',
+      path: libraryPath,
+      preview,
+      metadata: frontmatter,
+      chunks_status: chunksStatus,
+      message: chunksStatus === 'complete'
+        ? 'Article extracted with instant semantic search.'
+        : 'Article extracted. Semantic search processing in background.'
+    };
+
+  } catch (error) {
+    return {
+      success: false,
+      stage: 'extracted',
+      message: 'Article extraction failed',
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
 }
 
 /**
@@ -351,13 +449,13 @@ function generatePreview(text: string, maxLength: number = 5000): string {
  */
 export const extractContentToolDef = {
   name: 'extract_content',
-  description: 'Extract content from a URL (YouTube video) or PDF file and save to library. Returns preview and path. For non-YouTube URLs, use WebFetch tool directly then save_learning.',
+  description: 'Extract content from a URL (YouTube video, web article) or PDF file and save to library. Returns preview and path. Handles deduplication automatically.',
   inputSchema: {
     type: 'object',
     properties: {
       url: {
         type: 'string',
-        description: 'The URL to extract content from (YouTube video URL)'
+        description: 'The URL to extract content from (YouTube video or web article URL)'
       },
       file: {
         type: 'string',
