@@ -449,26 +449,22 @@ function generatePreview(text: string, maxLength: number = 5000): string {
  */
 export const extractContentToolDef = {
   name: 'extract_content',
-  description: 'Extract content from a URL (YouTube video, web article) or PDF file and save to library. Returns preview and path. Handles deduplication automatically.',
+  description: 'Extract content from a URL (YouTube video, web article) or PDF file and save to library. Returns preview and path. Handles deduplication automatically. Provide either "url" OR both "file" and "fileName" parameters.',
   inputSchema: {
     type: 'object',
     properties: {
       url: {
         type: 'string',
-        description: 'The URL to extract content from (YouTube video or web article URL)'
+        description: 'The URL to extract content from (YouTube video or web article URL). Use this parameter OR the file+fileName parameters.'
       },
       file: {
         type: 'string',
-        description: 'Base64-encoded PDF file content (alternative to url)'
+        description: 'Base64-encoded PDF file content (alternative to url). Must be used with fileName parameter.'
       },
       fileName: {
         type: 'string',
         description: 'Original filename (required when file parameter is provided)'
       }
-    },
-    oneOf: [
-      { required: ['url'] },
-      { required: ['file', 'fileName'] }
-    ]
+    }
   }
 };

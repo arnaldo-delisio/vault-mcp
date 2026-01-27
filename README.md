@@ -1,3 +1,14 @@
+---
+status: published
+category: mcp-server
+author: arnaldo-delisio
+published_npm: false
+npm_package: vault-mcp
+published_directories: []
+production_url: null
+last_active: 2026-01-26
+---
+
 # vault-mcp
 
 MCP server providing authenticated mobile access to vault operations from Claude Mobile.

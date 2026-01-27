@@ -9,7 +9,6 @@ import { SupabaseClient } from '@supabase/supabase-js';
 
 interface LearningRef {
   path: string;
-  title: string;
   frontmatter: any;
   body: string;
   created_at: string;
