@@ -1,5 +1,6 @@
 // YouTube utility functions
 import ytdl from '@distube/ytdl-core';
+import YTDlpWrap from 'yt-dlp-wrap';
 import { readdir, unlink } from 'node:fs/promises';
 import type { Readable } from 'stream';
 
@@ -151,25 +152,52 @@ export async function scrapeVideoInfo(videoIdOrUrl: string) {
 
 /**
  * Download audio stream from YouTube video
+ * Uses cascade fallback: ytdl-core (fast) → yt-dlp (robust)
  * Returns a readable stream of the audio in best available format
  */
 export async function downloadAudio(videoIdOrUrl: string): Promise<Readable> {
   const videoId = extractVideoId(videoIdOrUrl);
   const url = `https://www.youtube.com/watch?v=${videoId}`;
 
+  // Try ytdl-core first (fast, pure Node.js)
   try {
-    // Get audio-only stream with best quality
     const stream = ytdl(url, {
       filter: 'audioonly',
       quality: 'highestaudio',
     });
 
-    // Clean up debug files after stream is created
     cleanupDebugFiles();
-
     return stream as unknown as Readable;
   } catch (error: any) {
     cleanupDebugFiles();
-    throw new Error(`Failed to download audio: ${error.message}`);
+
+    // Check if error is 403 (YouTube blocking)
+    const is403 = error.message?.includes('403') || error.statusCode === 403;
+
+    if (!is403) {
+      // Non-403 error, don't try yt-dlp (likely network issue, invalid video, etc.)
+      throw new Error(`Failed to download audio: ${error.message}`);
+    }
+
+    // 403 error → Try yt-dlp fallback
+    console.log(`ytdl-core blocked with 403, trying yt-dlp fallback for ${videoId}`);
+  }
+
+  // Fallback: Use yt-dlp (more robust, bypasses YouTube blocks)
+  try {
+    const ytDlp = new YTDlpWrap();
+
+    // Download audio to stdout as stream
+    const stream = ytDlp.execStream([
+      url,
+      '-f', 'bestaudio',  // Best audio quality
+      '-o', '-',          // Output to stdout
+      '--quiet',          // Suppress progress output
+      '--no-warnings',    // Suppress warnings
+    ]);
+
+    return stream as Readable;
+  } catch (error: any) {
+    throw new Error(`Failed to download audio with yt-dlp: ${error.message}`);
   }
 }

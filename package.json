@@ -37,6 +37,7 @@
     "okapibm25": "^1.4.1",
     "openai": "^6.16.0",
     "youtube-transcript-plus": "^1.1.2",
+    "yt-dlp-wrap": "^2.3.12",
     "zod": "^3.25.76"
   },
   "devDependencies": {
