@@ -104,7 +104,9 @@ export async function extractContentTool(args: {
     // Extract with YouTubeExtractor
     try {
       const extractor = new YouTubeExtractor();
-      const transcript = await extractor.getTranscript(videoId);
+      const transcript = await extractor.getTranscript(videoId, {
+        useWhisperFallback: true  // Enable Whisper when captions unavailable
+      });
 
       // Build frontmatter per CONTEXT.md spec
       const frontmatter = {
