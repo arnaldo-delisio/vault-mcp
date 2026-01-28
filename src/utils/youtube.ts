@@ -160,35 +160,20 @@ export async function downloadAudio(videoIdOrUrl: string): Promise<Readable> {
   const url = `https://www.youtube.com/watch?v=${videoId}`;
 
   // Try ytdl-core first (fast, pure Node.js)
-  // ytdl returns a stream immediately, so we need to wait for 'info' or 'error' events
-  const ytdlAttempt = new Promise<Readable>((resolve, reject) => {
-    try {
-      const stream = ytdl(url, {
-        filter: 'audioonly',
-        quality: 'highestaudio',
-      });
-
-      // Listen for successful metadata fetch
-      stream.on('info', () => {
-        cleanupDebugFiles();
-        resolve(stream as unknown as Readable);
-      });
-
-      // Listen for errors (including 403)
-      stream.on('error', (error: any) => {
-        cleanupDebugFiles();
-        reject(error);
-      });
-    } catch (error) {
-      cleanupDebugFiles();
-      reject(error);
-    }
-  });
-
+  // Validate by fetching info first to catch 403 early
   try {
-    // Wait for ytdl-core to succeed
-    return await ytdlAttempt;
+    await ytdl.getInfo(url);
+    // Info fetch succeeded, now create audio stream
+    const stream = ytdl(url, {
+      filter: 'audioonly',
+      quality: 'highestaudio',
+    });
+
+    cleanupDebugFiles();
+    return stream as unknown as Readable;
   } catch (error: any) {
+    cleanupDebugFiles();
+
     // Check if error is 403 (YouTube blocking)
     const is403 = error.message?.includes('403') || error.statusCode === 403;
 
