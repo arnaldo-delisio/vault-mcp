@@ -8,6 +8,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { randomUUID } from 'crypto';
 import { createMcpServer } from './mcp-server.js';
 import { startupProcessor } from './services/background-embeddings.js';
+import YTDlpWrap from 'yt-dlp-wrap';
 
 // Validate required environment variables
 const requiredEnvVars = [
@@ -162,10 +163,21 @@ app.delete('/mcp', authMiddleware, async (req: Request, res: Response) => {
 
 // Start server
 const PORT = parseInt(process.env.PORT || '3000', 10);
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, '0.0.0.0', async () => {
   console.log(`vault-mcp listening on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/`);
   console.log(`OAuth endpoints ready at ${process.env.SERVER_URL}`);
+
+  // Initialize yt-dlp binary for YouTube audio downloads
+  try {
+    console.log('Downloading yt-dlp binary...');
+    const ytDlp = new YTDlpWrap();
+    await YTDlpWrap.downloadFromGithub();
+    console.log('✓ yt-dlp binary ready');
+  } catch (error) {
+    console.error('Failed to download yt-dlp binary:', error);
+    // Non-fatal: continues, but YouTube audio downloads will fail
+  }
 
   // Level 4: Process any stuck pending embeddings on startup (safety net)
   startupProcessor().catch(err => {
