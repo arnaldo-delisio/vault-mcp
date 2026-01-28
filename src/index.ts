@@ -171,9 +171,8 @@ app.listen(PORT, '0.0.0.0', async () => {
   // Initialize yt-dlp binary for YouTube audio downloads
   try {
     console.log('Downloading yt-dlp binary...');
-    const ytDlp = new YTDlpWrap();
-    await YTDlpWrap.downloadFromGithub();
-    console.log('✓ yt-dlp binary ready');
+    await YTDlpWrap.downloadFromGithub('./yt-dlp');
+    console.log('✓ yt-dlp binary ready at ./yt-dlp');
   } catch (error) {
     console.error('Failed to download yt-dlp binary:', error);
     // Non-fatal: continues, but YouTube audio downloads will fail

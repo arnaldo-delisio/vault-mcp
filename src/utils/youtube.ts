@@ -163,7 +163,7 @@ export async function downloadAudio(videoIdOrUrl: string): Promise<Readable> {
 
   // Use yt-dlp (robust, bypasses YouTube blocks, no memory issues)
   try {
-    const ytDlp = new YTDlpWrap();
+    const ytDlp = new YTDlpWrap('./yt-dlp');
 
     // Download audio to stdout as stream
     const stream = ytDlp.execStream([
