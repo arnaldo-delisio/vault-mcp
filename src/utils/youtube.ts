@@ -168,11 +168,20 @@ export async function downloadAudio(videoIdOrUrl: string): Promise<Readable> {
     // Download audio to stdout as stream
     const stream = ytDlp.execStream([
       url,
-      '-f', 'bestaudio',  // Best audio quality
+      '-f', 'bestaudio[ext=m4a]/bestaudio',  // Prefer m4a, fallback to best
       '-o', '-',          // Output to stdout
-      '--quiet',          // Suppress progress output
-      '--no-warnings',    // Suppress warnings
+      '--no-playlist',    // Don't download playlists
+      // Remove --quiet and --no-warnings to see errors
     ]);
+
+    // Add error handling for the stream
+    stream.on('error', (error) => {
+      console.error(`yt-dlp stream error for ${videoId}:`, error);
+    });
+
+    stream.on('close', () => {
+      console.log(`yt-dlp stream closed for ${videoId}`);
+    });
 
     return stream as Readable;
   } catch (error: any) {

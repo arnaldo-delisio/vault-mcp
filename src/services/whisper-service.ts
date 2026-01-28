@@ -40,11 +40,16 @@ export class WhisperService {
 
     try {
       // Write stream to temp file
+      console.log(`Writing audio stream to ${tempPath}...`);
       const writeStream = createWriteStream(tempPath);
       await pipeline(audioStream, writeStream);
+      console.log(`Audio stream written successfully to ${tempPath}`);
 
       // Transcribe the file
       return await this.transcribeFile(tempPath, options);
+    } catch (error: any) {
+      console.error('Failed to write audio stream:', error);
+      throw new Error(`Failed to process audio stream: ${error.message}`);
     } finally {
       // Clean up temp file
       if (existsSync(tempPath)) {
