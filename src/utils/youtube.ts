@@ -152,41 +152,16 @@ export async function scrapeVideoInfo(videoIdOrUrl: string) {
 
 /**
  * Download audio stream from YouTube video
- * Uses cascade fallback: ytdl-core (fast) → yt-dlp (robust)
+ * Uses yt-dlp exclusively due to ytdl-core memory issues and YouTube blocking
  * Returns a readable stream of the audio in best available format
  */
 export async function downloadAudio(videoIdOrUrl: string): Promise<Readable> {
   const videoId = extractVideoId(videoIdOrUrl);
   const url = `https://www.youtube.com/watch?v=${videoId}`;
 
-  // Try ytdl-core first (fast, pure Node.js)
-  // Validate by fetching info first to catch 403 early
-  try {
-    await ytdl.getInfo(url);
-    // Info fetch succeeded, now create audio stream
-    const stream = ytdl(url, {
-      filter: 'audioonly',
-      quality: 'highestaudio',
-    });
+  cleanupDebugFiles();
 
-    cleanupDebugFiles();
-    return stream as unknown as Readable;
-  } catch (error: any) {
-    cleanupDebugFiles();
-
-    // Check if error is 403 (YouTube blocking)
-    const is403 = error.message?.includes('403') || error.statusCode === 403;
-
-    if (!is403) {
-      // Non-403 error, don't try yt-dlp (likely network issue, invalid video, etc.)
-      throw new Error(`Failed to download audio: ${error.message}`);
-    }
-
-    // 403 error → Try yt-dlp fallback
-    console.log(`ytdl-core blocked with 403, trying yt-dlp fallback for ${videoId}`);
-  }
-
-  // Fallback: Use yt-dlp (more robust, bypasses YouTube blocks)
+  // Use yt-dlp (robust, bypasses YouTube blocks, no memory issues)
   try {
     const ytDlp = new YTDlpWrap();
 
@@ -201,6 +176,6 @@ export async function downloadAudio(videoIdOrUrl: string): Promise<Readable> {
 
     return stream as Readable;
   } catch (error: any) {
-    throw new Error(`Failed to download audio with yt-dlp: ${error.message}`);
+    throw new Error(`Failed to download audio: ${error.message}`);
   }
 }
