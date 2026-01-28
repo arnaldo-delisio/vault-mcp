@@ -1,7 +1,10 @@
 // YouTube utility functions
 import ytdl from '@distube/ytdl-core';
 import YTDlpWrap from 'yt-dlp-wrap';
-import { readdir, unlink } from 'node:fs/promises';
+import { readdir, unlink, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createReadStream } from 'node:fs';
 import type { Readable } from 'stream';
 
 /**
@@ -152,39 +155,58 @@ export async function scrapeVideoInfo(videoIdOrUrl: string) {
 
 /**
  * Download audio stream from YouTube video
- * Uses yt-dlp exclusively due to ytdl-core memory issues and YouTube blocking
- * Returns a readable stream of the audio in best available format
+ * Uses yt-dlp with temp file download (not stdout streaming)
+ * Stdout streaming causes backpressure in Railway Docker - temp file is reliable
+ * Returns a readable stream from the completed download
  */
 export async function downloadAudio(videoIdOrUrl: string): Promise<Readable> {
   const videoId = extractVideoId(videoIdOrUrl);
   const url = `https://www.youtube.com/watch?v=${videoId}`;
+  const tempPath = join(tmpdir(), `yt-audio-${Date.now()}-${videoId}.m4a`);
 
   cleanupDebugFiles();
 
-  // Use yt-dlp (robust, bypasses YouTube blocks, no memory issues)
   try {
     const ytDlp = new YTDlpWrap('./yt-dlp');
 
-    // Download audio to stdout as stream
-    const stream = ytDlp.execStream([
+    console.log(`Downloading audio to ${tempPath}...`);
+
+    // Download to temp file (NOT stdout - fixes premature close)
+    await ytDlp.exec([
       url,
-      '-f', 'bestaudio[ext=m4a]/bestaudio',  // Prefer m4a, fallback to best
-      '-o', '-',          // Output to stdout
-      '--no-playlist',    // Don't download playlists
-      // Remove --quiet and --no-warnings to see errors
+      '-f', 'bestaudio[ext=m4a]/bestaudio',  // Prefer m4a (better for Whisper)
+      '-o', tempPath,                        // Explicit file path, NOT stdout
+      '--no-playlist',
+      '--newline',  // Progress on new lines (easier to parse if needed)
     ]);
 
-    // Add error handling for the stream
-    stream.on('error', (error) => {
-      console.error(`yt-dlp stream error for ${videoId}:`, error);
+    // Verify download succeeded
+    const stats = await stat(tempPath);
+    if (stats.size === 0) {
+      throw new Error('yt-dlp created empty file');
+    }
+
+    console.log(`Audio downloaded successfully (${(stats.size / 1024 / 1024).toFixed(2)}MB)`);
+
+    // Create read stream from completed file
+    const stream = createReadStream(tempPath);
+
+    // Clean up temp file after consumption
+    stream.on('end', () => {
+      console.log(`Cleaning up temp file: ${tempPath}`);
+      unlink(tempPath).catch(() => {});
     });
 
-    stream.on('close', () => {
-      console.log(`yt-dlp stream closed for ${videoId}`);
+    stream.on('error', () => {
+      // Also cleanup on stream error
+      unlink(tempPath).catch(() => {});
     });
 
     return stream as Readable;
+
   } catch (error: any) {
+    // Clean up on download error
+    await unlink(tempPath).catch(() => {});
     throw new Error(`Failed to download audio: ${error.message}`);
   }
 }
