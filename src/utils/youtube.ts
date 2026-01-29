@@ -1,10 +1,11 @@
 // YouTube utility functions
 import ytdl from '@distube/ytdl-core';
 import YTDlpWrap from 'yt-dlp-wrap';
-import { readdir, unlink, stat } from 'node:fs/promises';
+import { readdir, unlink, stat, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createReadStream } from 'node:fs';
+import { constants } from 'node:fs';
 import type { Readable } from 'stream';
 
 /**
@@ -180,6 +181,16 @@ export async function downloadAudio(videoIdOrUrl: string): Promise<Readable> {
       '--newline',  // Progress on new lines (easier to parse if needed)
       '--js-runtimes', 'node:/usr/local/bin/node',  // Configure JS runtime for YouTube player script parsing
     ]);
+
+    // Check if file was created (yt-dlp may exit successfully even on 403)
+    try {
+      await access(tempPath, constants.F_OK);
+    } catch {
+      throw new Error(
+        'YouTube blocked the download (HTTP 403). This video may not be available for audio extraction. ' +
+        'Caption-based transcription is more reliable - this video may work if it has captions.'
+      );
+    }
 
     // Verify download succeeded
     const stats = await stat(tempPath);
