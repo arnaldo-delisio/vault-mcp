@@ -61,7 +61,9 @@ async function extractWithSupadata(
     };
   }
 
+  console.log('[Supadata] Calling API...');
   const transcript = await supadata.getTranscript(videoId);
+  console.log('[Supadata] API call successful, got transcript');
 
   // Build frontmatter
   const frontmatter = {
@@ -327,7 +329,14 @@ export async function extractContentTool(args: {
         // Mode specified: execute chosen path
         if (args.extraction_mode === 'fast') {
           console.log('[Extract] Using fast mode (Supadata)');
-          return await extractWithSupadata(videoId, videoInfo, libraryPath);
+          try {
+            const result = await extractWithSupadata(videoId, videoInfo, libraryPath);
+            console.log('[Extract] Fast mode completed successfully');
+            return result;
+          } catch (err) {
+            console.error('[Extract] Fast mode failed:', err);
+            throw err;
+          }
         } else if (args.extraction_mode === 'queue') {
           console.log('[Extract] Using queue mode');
 
