@@ -216,12 +216,10 @@ export async function saveLearningTool(args: {
       };
     }
 
-    // Level 2: Try inline processing for small files
+    // Level 2: DISABLED - Inline processing causes OOM crashes on Railway
+    // Always use Level 3 (Edge Function) for background processing
     let chunksStatus = 'pending';
-    if (isEmbeddingAvailable()) {
-      const result = await processInlineIfSmall(fileData.id, body);
-      chunksStatus = result.chunks_status;
-    }
+    // Skip inline processing - embeddings will be ready in ~30s via Edge Function
 
     // Check MOC threshold after saving
     const mocGenerator = new MOCGenerator(supabase, userId);

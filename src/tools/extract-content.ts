@@ -153,14 +153,11 @@ export async function extractContentTool(args: {
         };
       }
 
-      // Level 2: Try inline processing for small files (non-blocking)
+      // Level 2: DISABLED - Inline processing causes OOM crashes on Railway
+      // Always use Level 3 (Edge Function) for background processing
+      // This prevents tool timeouts and memory issues
       let chunksStatus = 'pending';
-      if (isEmbeddingAvailable()) {
-        const result = await processInlineIfSmall(fileData.id, transcript.fullText);
-        chunksStatus = result.chunks_status;
-      }
-      // If not processed inline, Level 3 (Edge Function) will pick it up
-      // Level 4 (startup processor) is safety net
+      // Skip inline processing - embeddings will be ready in ~30s via Edge Function
 
       // Generate preview - smart sampling for long transcripts
       const preview = generatePreview(transcript.fullText);
@@ -259,14 +256,10 @@ export async function extractContentTool(args: {
       };
     }
 
-    // Level 2: Try inline processing for small files (non-blocking)
+    // Level 2: DISABLED - Inline processing causes OOM crashes on Railway
+    // Always use Level 3 (Edge Function) for background processing
     let chunksStatus = 'pending';
-    if (isEmbeddingAvailable()) {
-      const result = await processInlineIfSmall(fileData.id, article.content);
-      chunksStatus = result.chunks_status;
-    }
-    // If not processed inline, Level 3 (Edge Function) will pick it up
-    // Level 4 (startup processor) is safety net
+    // Skip inline processing - embeddings will be ready in ~30s via Edge Function
 
     // Generate preview
     const preview = generatePreview(article.content);
@@ -385,14 +378,10 @@ async function handlePdfFile(
       };
     }
 
-    // Level 2: Try inline processing for small files (non-blocking)
+    // Level 2: DISABLED - Inline processing causes OOM crashes on Railway
+    // Always use Level 3 (Edge Function) for background processing
     let chunksStatus = 'pending';
-    if (isEmbeddingAvailable()) {
-      const embeddingResult = await processInlineIfSmall(fileData.id, result.content);
-      chunksStatus = embeddingResult.chunks_status;
-    }
-    // If not processed inline, Level 3 (Edge Function) will pick it up
-    // Level 4 (startup processor) is safety net
+    // Skip inline processing - embeddings will be ready in ~30s via Edge Function
 
     // Generate preview
     const preview = generatePreview(result.content);
