@@ -37,11 +37,16 @@ export class SupadataExtractor {
     const data = await response.json();
     console.log('[Supadata] API response:', JSON.stringify(data).substring(0, 500));
 
-    // Convert to our segment format
-    const segments: TranscriptSegment[] = data.segments.map((s: any) => ({
+    // Supadata API format: { lang: "en", content: [{ text, offset, duration }] }
+    if (!data.content || !Array.isArray(data.content)) {
+      throw new Error('Invalid Supadata API response: missing content array');
+    }
+
+    // Convert to our segment format (offset -> start in seconds)
+    const segments: TranscriptSegment[] = data.content.map((s: any) => ({
       text: s.text,
-      start: s.start,
-      duration: s.duration
+      start: s.offset / 1000, // Convert ms to seconds
+      duration: s.duration / 1000 // Convert ms to seconds
     }));
 
     const fullText = segments.map(s => s.text).join(' ');
@@ -49,7 +54,7 @@ export class SupadataExtractor {
     return {
       segments,
       fullText,
-      language: data.language || 'en'
+      language: data.lang || 'en'
     };
   }
 }
