@@ -29,10 +29,13 @@ export class SupadataExtractor {
     );
 
     if (!response.ok) {
-      throw new Error(`Supadata API error: ${response.status}`);
+      const errorText = await response.text();
+      console.error('[Supadata] API error:', response.status, errorText);
+      throw new Error(`Supadata API error: ${response.status} - ${errorText}`);
     }
 
     const data = await response.json();
+    console.log('[Supadata] API response:', JSON.stringify(data).substring(0, 500));
 
     // Convert to our segment format
     const segments: TranscriptSegment[] = data.segments.map((s: any) => ({
