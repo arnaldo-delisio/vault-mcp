@@ -46,9 +46,11 @@ async function extractWithSupadata(
   videoInfo: any,
   libraryPath: string
 ): Promise<ExtractResult> {
+  console.log('[Supadata] Starting extraction for video:', videoId);
   const supadata = new SupadataExtractor();
 
   if (!supadata.isAvailable()) {
+    console.log('[Supadata] API key not available');
     return {
       success: false,
       stage: 'choice_required',
@@ -324,8 +326,11 @@ export async function extractContentTool(args: {
 
         // Mode specified: execute chosen path
         if (args.extraction_mode === 'fast') {
+          console.log('[Extract] Using fast mode (Supadata)');
           return await extractWithSupadata(videoId, videoInfo, libraryPath);
         } else if (args.extraction_mode === 'queue') {
+          console.log('[Extract] Using queue mode');
+
           const queuePath = await createQueueFile(videoId, videoInfo);
           return {
             success: true,
