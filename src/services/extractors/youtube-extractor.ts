@@ -5,13 +5,11 @@ import type {
   TranscriptSegment,
   TranscriptOptions
 } from '../../types/youtube';
-import { extractVideoId, getVideoInfo, scrapeVideoInfo, formatTimestamp, downloadAudio } from '../../utils/youtube';
-import { WhisperService } from '../whisper-service';
+import { extractVideoId, getVideoInfo, scrapeVideoInfo, formatTimestamp } from '../../utils/youtube';
 
 const DEFAULT_LANGUAGES = ['en', 'en-US', 'en-GB'];
 
 export class YouTubeExtractor {
-  private whisperService = new WhisperService();
 
   /**
    * Get transcript for a YouTube video
@@ -37,31 +35,23 @@ export class YouTubeExtractor {
       }
     }
 
-    // Try fetching transcript from captions first
+    // Try fetching transcript from captions
+    console.log(`[YouTube] Attempting caption fetch for video: ${videoId}`);
     let transcript;
-    let captionError: Error | null = null;
-
     try {
       transcript = await this.fetchFromCaptions(videoId, options);
+      console.log(`[YouTube] Captions fetched successfully`);
     } catch (error: any) {
-      captionError = error;
-    }
+      console.error(`[YouTube] Caption fetch failed: ${error.message}`);
 
-    // If captions failed and Whisper fallback is enabled, try Whisper
-    if (!transcript && options.useWhisperFallback) {
-      if (!this.whisperService.isAvailable()) {
-        throw new Error(
-          'No captions available and Whisper fallback requested, but OPENAI_API_KEY is not set. ' +
-          `Original error: ${captionError?.message}`
-        );
-      }
-
-      transcript = await this.fetchWithWhisper(videoId, options);
-    }
-
-    // If we still don't have a transcript, throw the original error
-    if (!transcript) {
-      throw captionError || new Error('No captions available for this video');
+      // Throw special error with code for extract_content to handle
+      const captionsError = new Error(
+        error.message || 'Captions not available for this video'
+      );
+      (captionsError as any).code = 'CAPTIONS_UNAVAILABLE';
+      (captionsError as any).videoId = videoId;
+      (captionsError as any).videoInfo = videoInfo;
+      throw captionsError;
     }
 
     return {
@@ -76,31 +66,6 @@ export class YouTubeExtractor {
   }
 
   /**
-   * Fetch transcript using Whisper API
-   */
-  private async fetchWithWhisper(
-    videoId: string,
-    options: TranscriptOptions
-  ): Promise<Pick<YouTubeTranscript, 'segments' | 'fullText' | 'language'>> {
-    // Download audio from YouTube
-    const audioStream = await downloadAudio(videoId);
-
-    // Transcribe with Whisper
-    const result = await this.whisperService.transcribe(audioStream, {
-      language: options.language,
-    });
-
-    // Format the full text according to options
-    const fullText = this.formatFullText(result.segments, options);
-
-    return {
-      segments: result.segments,
-      fullText,
-      language: `${result.language} (whisper)`,
-    };
-  }
-
-  /**
    * Fetch transcript from YouTube captions
    */
   private async fetchFromCaptions(
@@ -111,13 +76,18 @@ export class YouTubeExtractor {
       ? [options.language, ...DEFAULT_LANGUAGES]
       : DEFAULT_LANGUAGES;
 
+    console.log(`[YouTube] Trying caption languages: ${languages.join(', ')}`);
+
     // Try each language
     let lastError: Error | null = null;
     for (const lang of languages) {
       try {
+        console.log(`[YouTube] Fetching captions for lang: ${lang}`);
         const transcriptData = await YoutubeTranscript.fetchTranscript(videoId, {
           lang,
         });
+
+        console.log(`[YouTube] Got ${transcriptData.length} caption segments for lang: ${lang}`);
 
         // Convert to our format
         const segments: TranscriptSegment[] = transcriptData.map((item: any) => ({
@@ -134,6 +104,7 @@ export class YouTubeExtractor {
           language: lang,
         };
       } catch (error: any) {
+        console.error(`[YouTube] Caption fetch failed for lang ${lang}: ${error.message}`);
         lastError = error;
         continue;  // Try next language
       }

@@ -13,7 +13,9 @@ import { createHash } from 'crypto';
 import { writeFileSync, unlinkSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import matter from 'gray-matter';
 import { YouTubeExtractor } from '../services/extractors/youtube-extractor.js';
+import { SupadataExtractor } from '../services/extractors/supadata-extractor.js';
 import { ArticleExtractor } from '../services/extractors/article-extractor.js';
 import { GeminiExtractor } from '../services/extractors/gemini-extractor.js';
 import { isEmbeddingAvailable } from '../services/embeddings.js';
@@ -22,7 +24,7 @@ import { supabase } from '../services/vault-client.js';
 
 interface ExtractResult {
   success: boolean;
-  stage: 'cached' | 'extracted' | 'delegate';
+  stage: 'cached' | 'extracted' | 'delegate' | 'choice_required' | 'queued';
   path?: string;
   preview?: string;
   metadata?: Record<string, unknown>;
@@ -30,6 +32,130 @@ interface ExtractResult {
   chunks_status?: string;
   message: string;
   error?: string;
+  choices?: {
+    fast?: string;
+    queue?: string;
+  };
+}
+
+/**
+ * Extract with Supadata API (fast path)
+ */
+async function extractWithSupadata(
+  videoId: string,
+  videoInfo: any,
+  libraryPath: string
+): Promise<ExtractResult> {
+  const supadata = new SupadataExtractor();
+
+  if (!supadata.isAvailable()) {
+    return {
+      success: false,
+      stage: 'choice_required',
+      message: "Fast extraction not available. Please choose 'Save for later' instead.",
+      choices: {
+        queue: "Save for later - Queue for processing when laptop is online (~3-4 min)"
+      }
+    };
+  }
+
+  const transcript = await supadata.getTranscript(videoId);
+
+  // Build frontmatter
+  const frontmatter = {
+    type: 'transcript',
+    source_url: `https://www.youtube.com/watch?v=${videoId}`,
+    source_title: videoInfo?.title,
+    source_author: videoInfo?.author,
+    video_id: videoId,
+    extracted_at: new Date().toISOString(),
+    extraction_method: 'supadata',
+    tags: ['transcript', 'youtube']
+  };
+
+  // Build content hash
+  const contentHash = createHash('sha256')
+    .update(transcript.fullText)
+    .digest('hex');
+
+  const userId = '00000000-0000-0000-0000-000000000001';
+
+  // Save to Supabase
+  const { data: fileData, error: upsertError } = await supabase
+    .from('files')
+    .upsert({
+      path: libraryPath,
+      body: transcript.fullText,
+      frontmatter,
+      embedding: null,
+      content_hash: contentHash,
+      user_id: userId,
+      chunks_status: 'pending'
+    }, { onConflict: 'user_id,path' })
+    .select('id')
+    .single();
+
+  if (upsertError || !fileData) {
+    return {
+      success: false,
+      stage: 'extracted',
+      message: 'Extraction succeeded but file save failed',
+      error: upsertError?.message || 'No file data returned'
+    };
+  }
+
+  const preview = generatePreview(transcript.fullText);
+
+  return {
+    success: true,
+    stage: 'extracted',
+    path: libraryPath,
+    preview,
+    metadata: frontmatter,
+    chunks_status: 'pending',
+    message: 'Content extracted. Semantic search processing in background.'
+  };
+}
+
+/**
+ * Create a queue file for local laptop processing
+ */
+async function createQueueFile(
+  videoId: string,
+  videoInfo: { title?: string; author?: string } | null
+): Promise<string> {
+  const queuePath = `queue/whisper/${videoId}.md`;
+
+  const frontmatter = {
+    videoId,
+    url: `https://www.youtube.com/watch?v=${videoId}`,
+    title: videoInfo?.title || 'Unknown',
+    author: videoInfo?.author || 'Unknown',
+    queued_at: new Date().toISOString(),
+    status: 'pending'
+  };
+
+  const body = `# Queued for Processing
+
+**Video:** ${videoInfo?.title || videoId}
+**Queued:** ${new Date().toISOString()}
+
+This video will be processed automatically when your laptop is online.
+`;
+
+  const content = matter.stringify(body, frontmatter);
+  const contentHash = createHash('sha256').update(content).digest('hex');
+  const userId = '00000000-0000-0000-0000-000000000001';
+
+  await supabase.from('files').insert({
+    path: queuePath,
+    body: content,
+    frontmatter,
+    content_hash: contentHash,
+    user_id: userId
+  });
+
+  return queuePath;
 }
 
 /**
@@ -39,6 +165,7 @@ export async function extractContentTool(args: {
   url?: string;
   file?: string;
   fileName?: string;
+  extraction_mode?: 'fast' | 'queue';
 }): Promise<ExtractResult> {
   const { url, file, fileName } = args;
 
@@ -101,12 +228,10 @@ export async function extractContentTool(args: {
       };
     }
 
-    // Extract with YouTubeExtractor
+    // Try captions first (free, works when available)
     try {
       const extractor = new YouTubeExtractor();
-      const transcript = await extractor.getTranscript(videoId, {
-        useWhisperFallback: true  // Enable Whisper when captions unavailable
-      });
+      const transcript = await extractor.getTranscript(videoId);
 
       // Build frontmatter per CONTEXT.md spec
       const frontmatter = {
@@ -174,7 +299,44 @@ export async function extractContentTool(args: {
           : 'Content extracted. Semantic search processing in background.'
       };
 
-    } catch (error) {
+    } catch (error: any) {
+      // Captions failed - check if it's the special CAPTIONS_UNAVAILABLE error
+      if (error.code === 'CAPTIONS_UNAVAILABLE') {
+        const videoInfo = error.videoInfo;
+
+        // No mode specified? Ask user to choose
+        if (!args.extraction_mode) {
+          return {
+            success: false,
+            stage: 'choice_required',
+            message: "This video's captions aren't directly available. How would you like to proceed?",
+            metadata: {
+              videoId,
+              title: videoInfo?.title,
+              author: videoInfo?.author
+            },
+            choices: {
+              fast: "Extract now - Get transcript immediately (uses cloud processing)",
+              queue: "Save for later - Queue for processing when laptop is online (~3-4 min)"
+            }
+          };
+        }
+
+        // Mode specified: execute chosen path
+        if (args.extraction_mode === 'fast') {
+          return await extractWithSupadata(videoId, videoInfo, libraryPath);
+        } else if (args.extraction_mode === 'queue') {
+          const queuePath = await createQueueFile(videoId, videoInfo);
+          return {
+            success: true,
+            stage: 'queued',
+            path: queuePath,
+            message: "Video queued for processing. The transcript will be ready in 3-4 minutes when your laptop is online."
+          };
+        }
+      }
+
+      // Other errors: throw
       return {
         success: false,
         stage: 'extracted',
@@ -455,6 +617,11 @@ export const extractContentToolDef = {
       fileName: {
         type: 'string',
         description: 'Original filename (required when file parameter is provided)'
+      },
+      extraction_mode: {
+        type: 'string',
+        enum: ['fast', 'queue'],
+        description: 'For videos without direct captions: "fast" extracts immediately using cloud service, "queue" saves for processing when laptop is online'
       }
     }
   }
