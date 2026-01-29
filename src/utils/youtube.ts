@@ -178,6 +178,7 @@ export async function downloadAudio(videoIdOrUrl: string): Promise<Readable> {
       '-o', tempPath,                        // Explicit file path, NOT stdout
       '--no-playlist',
       '--newline',  // Progress on new lines (easier to parse if needed)
+      '--js-runtimes', 'node:/usr/local/bin/node',  // Configure JS runtime for YouTube player script parsing
     ]);
 
     // Verify download succeeded
