@@ -103,7 +103,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'extract_content') {
-    const result = await extractContentTool(args as { url: string });
+    const result = await extractContentTool(args as { url?: string; file?: string; fileName?: string; extraction_mode?: 'fast' | 'queue' });
     return {
       content: [
         {
