@@ -635,7 +635,7 @@ export const extractContentToolDef = {
       extraction_mode: {
         type: 'string',
         enum: ['fast', 'queue'],
-        description: 'For videos without direct captions: "fast" extracts immediately using cloud service, "queue" saves for processing when laptop is online'
+        description: 'OPTIONAL - Only provide on second call after tool returns choice_required status. Leave empty on first call to let the tool detect availability and present options. When provided: "fast" = immediate cloud extraction, "queue" = laptop processing when online (3-4 min).'
       }
     }
   }
