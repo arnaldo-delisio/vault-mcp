@@ -237,7 +237,7 @@ async function hybridSearchWithFilters(
   const filePaths = data.map((r: { path: string }) => r.path);
   let query_builder = supabase
     .from('files')
-    .select('path, frontmatter, created_at, content')
+    .select('path, frontmatter, created_at, body')
     .in('path', filePaths);
 
   // Apply filters to metadata fetch
@@ -263,7 +263,7 @@ async function hybridSearchWithFilters(
 
       return {
         path: result.path,
-        snippet: result.snippet || extractSnippet(metadata?.content || '', query),
+        snippet: result.snippet || extractSnippet(metadata?.body || '', query),
         tags: metadata?.frontmatter?.tags || [],
         updated_at: metadata?.created_at || new Date().toISOString(),
         score: result.score
@@ -282,7 +282,7 @@ async function filteredBrowse(
 ): Promise<SearchResult[]> {
   let query_builder = supabase
     .from('files')
-    .select('path, frontmatter, created_at, content')
+    .select('path, frontmatter, created_at, body')
     .order('created_at', { ascending: false })
     .limit(limit);
 
@@ -302,7 +302,7 @@ async function filteredBrowse(
   // Format results (no scores for browse)
   return data.map((file: any) => ({
     path: file.path,
-    snippet: extractSnippet(file.content || ''),
+    snippet: extractSnippet(file.body || ''),
     tags: file.frontmatter?.tags || [],
     updated_at: file.created_at || new Date().toISOString(),
     score: undefined
