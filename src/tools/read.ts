@@ -108,8 +108,9 @@ function grepInFile(fileData: FileData, searchQuery: string): string {
 
 /**
  * Search within file chunks using semantic + keyword search (for large files)
+ * Implements smart chunk sampling: top matches + context chunks (beginning/middle/end)
  */
-async function searchInChunks(filePath: string, searchQuery: string): Promise<string> {
+async function searchInChunks(filePath: string, searchQuery: string, limit: number = 10): Promise<string> {
   // Generate query embedding if available
   let queryEmbedding: number[] | null = null;
   if (isEmbeddingAvailable()) {
@@ -120,7 +121,7 @@ async function searchInChunks(filePath: string, searchQuery: string): Promise<st
     }
   }
 
-  // Get file ID
+  // Get file ID and total chunk count
   const { data: fileData, error: fileError } = await supabase
     .from('files')
     .select('id, path')
@@ -131,22 +132,39 @@ async function searchInChunks(filePath: string, searchQuery: string): Promise<st
     throw new Error(`File not found: ${filePath}`);
   }
 
+  // Get total chunk count for this file
+  const { count: totalChunks, error: countError } = await supabase
+    .from('file_chunks')
+    .select('*', { count: 'exact', head: true })
+    .eq('file_id', fileData.id);
+
+  if (countError) {
+    throw new Error(`Failed to count chunks: ${countError.message}`);
+  }
+
+  const totalChunkCount = totalChunks || 0;
+
+  if (totalChunkCount === 0) {
+    return `No searchable chunks found for "${searchQuery}" in ${filePath}\n\n💡 File may not be indexed yet.`;
+  }
+
   // Search chunks for this specific file
   const searchLower = searchQuery.toLowerCase();
 
-  // Keyword search in chunks
+  // Keyword search in chunks (get more than limit to account for context chunk overlap)
   const { data: keywordChunks, error: kwError } = await supabase
     .from('file_chunks')
     .select('chunk_index, chunk_text')
     .eq('file_id', fileData.id)
     .ilike('chunk_text', `%${searchQuery}%`)
-    .limit(5);
+    .order('chunk_index', { ascending: true })
+    .limit(limit);
 
   if (kwError) {
     throw new Error(`Keyword search failed: ${kwError.message}`);
   }
 
-  let results = keywordChunks || [];
+  let topMatches = keywordChunks || [];
 
   // Semantic search in chunks (if embedding available)
   if (queryEmbedding) {
@@ -155,7 +173,7 @@ async function searchInChunks(filePath: string, searchQuery: string): Promise<st
       .select('chunk_index, chunk_text, embedding')
       .eq('file_id', fileData.id)
       .not('embedding', 'is', null)
-      .limit(5);
+      .limit(limit);
 
     if (!semError && semanticChunks) {
       // Calculate cosine similarity for each chunk
@@ -165,27 +183,91 @@ async function searchInChunks(filePath: string, searchQuery: string): Promise<st
       });
 
       // Merge with keyword results (deduplicate by chunk_index)
-      const keywordIndices = new Set(results.map(r => r.chunk_index));
+      const keywordIndices = new Set(topMatches.map(r => r.chunk_index));
       scoredChunks
         .filter(c => !keywordIndices.has(c.chunk_index))
         .sort((a, b) => b.score - a.score)
-        .slice(0, 3)
-        .forEach(c => results.push(c));
+        .slice(0, Math.max(0, limit - topMatches.length))
+        .forEach(c => topMatches.push(c));
     }
   }
 
-  if (results.length === 0) {
+  // Add context chunks for coverage (beginning/middle/end)
+  const matchedIndices = new Set(topMatches.map(c => c.chunk_index));
+  const contextIndices: number[] = [];
+
+  // Beginning: chunk 0 (if not already matched)
+  if (!matchedIndices.has(0) && topMatches.length < limit) {
+    contextIndices.push(0);
+  }
+
+  // Middle: chunk around totalChunks/2 (if not already matched)
+  const middleIdx = Math.floor(totalChunkCount / 2);
+  if (!matchedIndices.has(middleIdx) && topMatches.length + contextIndices.length < limit) {
+    contextIndices.push(middleIdx);
+  }
+
+  // End: last chunk (if not already matched)
+  const endIdx = totalChunkCount - 1;
+  if (!matchedIndices.has(endIdx) && topMatches.length + contextIndices.length < limit && endIdx > 0) {
+    contextIndices.push(endIdx);
+  }
+
+  // Fetch context chunks
+  let contextChunks: any[] = [];
+  if (contextIndices.length > 0) {
+    const { data: chunks, error: contextError } = await supabase
+      .from('file_chunks')
+      .select('chunk_index, chunk_text')
+      .eq('file_id', fileData.id)
+      .in('chunk_index', contextIndices);
+
+    if (!contextError && chunks) {
+      contextChunks = chunks;
+    }
+  }
+
+  // Merge and deduplicate all chunks
+  const allChunks = [...topMatches, ...contextChunks];
+  const uniqueChunks = Array.from(
+    new Map(allChunks.map(c => [c.chunk_index, c])).values()
+  ).sort((a, b) => a.chunk_index - b.chunk_index);
+
+  if (uniqueChunks.length === 0) {
     return `No matches found for "${searchQuery}" in ${filePath}\n\n💡 Try different keywords or read the full file.`;
   }
 
-  // Format output
-  let output = `Found ${results.length} relevant section${results.length === 1 ? '' : 's'} for "${searchQuery}" in ${filePath}:\n\n`;
+  // Format output with smart chunk sampling context
+  const totalChars = uniqueChunks.reduce((sum, c) => sum + c.chunk_text.length, 0);
+  let output = `Found ${uniqueChunks.length} relevant section${uniqueChunks.length === 1 ? '' : 's'} for "${searchQuery}" in ${filePath}:\n\n`;
 
-  results.slice(0, 5).forEach((chunk, idx) => {
-    output += `--- Section ${idx + 1} (chunk ${chunk.chunk_index}) ---\n`;
+  // Show chunk distribution
+  const chunkLabels = uniqueChunks.map(c => {
+    if (c.chunk_index === 0) return `0 (intro)`;
+    if (c.chunk_index === middleIdx) return `${c.chunk_index} (middle)`;
+    if (c.chunk_index === endIdx) return `${c.chunk_index} (end)`;
+    return `${c.chunk_index}`;
+  }).join(', ');
+
+  output += `Showing chunks: ${chunkLabels}\n`;
+  output += `Total: ${totalChunkCount} chunks in file (~${(totalChars).toLocaleString()} chars)\n\n`;
+
+  uniqueChunks.forEach((chunk, idx) => {
+    let label = 'Relevant Match';
+    if (chunk.chunk_index === 0) label = 'Introduction';
+    else if (chunk.chunk_index === middleIdx) label = 'Middle Section';
+    else if (chunk.chunk_index === endIdx) label = 'End Section';
+
+    output += `--- Section ${idx + 1}: ${label} (chunk ${chunk.chunk_index}/${totalChunkCount - 1}) ---\n`;
     output += chunk.chunk_text;
     output += '\n\n';
   });
+
+  // Multi-turn tips
+  output += `💡 Multi-turn tips:\n`;
+  output += `- Ask follow-up questions to explore specific topics\n`;
+  output += `- Request "chunks around ${middleIdx}" for more context near a specific section\n`;
+  output += `- Search for different keywords to find other relevant sections`;
 
   return output;
 }
