@@ -26,8 +26,8 @@ vault-mcp provides 5 tools accessible from Claude Mobile:
 - **vault_search_tools**: Intelligent tool discovery using hybrid BM25 + OpenAI embeddings search with Reciprocal Rank Fusion for >90% query accuracy
 - **synthesize_content**: Extract content from URLs (YouTube videos or web articles), conduct multi-turn conversation to gather context, and save synthesized learnings with frontmatter
 - **add_note**: Append timestamped notes to today's daily journal file (daily/YYYY-MM-DD.md) with automatic file creation
-- **search_notes**: Full-text search across vault content using ILIKE pattern matching, returns formatted results with snippets
-- **read_note**: Retrieve full file contents by exact path with YAML-formatted frontmatter and metadata
+- **search_notes**: Hybrid keyword + semantic search across vault content using file_chunks, returns formatted results with snippets and relevance scores
+- **read_note**: Retrieve file contents by exact path. Optional `search` parameter filters to relevant sections using semantic + keyword search in chunks (for files >50k chars)
 
 ## Prerequisites
 

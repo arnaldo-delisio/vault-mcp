@@ -71,13 +71,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'read_note',
-      description: 'Read the full contents of a vault file by path.',
+      description: 'Read vault file contents by path. Optional search parameter filters to relevant sections in large files (uses semantic + keyword search).',
       inputSchema: {
         type: 'object',
         properties: {
           path: {
             type: 'string',
             description: 'File path (e.g., "learnings/2024-01-15-api-design.md")'
+          },
+          search: {
+            type: 'string',
+            description: 'Optional search query to filter to relevant sections. Useful for large files (>50k chars). Uses semantic search in chunks for better results.'
           }
         },
         required: ['path']
@@ -164,7 +168,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'read_note') {
-    const result = await readNoteTool(args as { path: string });
+    const result = await readNoteTool(args as { path: string; search?: string });
     return {
       content: [
         {
