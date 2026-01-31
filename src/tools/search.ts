@@ -177,30 +177,13 @@ function buildFilters(builder: any, filters?: SearchFilters, userId: string = '0
     builder = builder.eq('frontmatter->>source_type', filters.source);
   }
 
-  // Date range filters
-  if (filters.after || filters.before) {
-    // For library files, prefer published_date if available, otherwise use created_at
-    // For other files, always use created_at
-    const isLibrary = filters.file_type === 'library' ||
-                      (filters.source !== undefined); // source filter implies library
-
-    if (isLibrary) {
-      // For library files: use published_date when filtering by date
-      if (filters.after) {
-        builder = builder.gte('frontmatter->>published_date', filters.after);
-      }
-      if (filters.before) {
-        builder = builder.lte('frontmatter->>published_date', filters.before);
-      }
-    } else {
-      // For non-library files: use created_at
-      if (filters.after) {
-        builder = builder.gte('created_at', filters.after);
-      }
-      if (filters.before) {
-        builder = builder.lte('created_at', filters.before);
-      }
-    }
+  // Date range filters - always use created_at (when YOU captured it)
+  // published_date is just metadata about the source content
+  if (filters.after) {
+    builder = builder.gte('created_at', filters.after);
+  }
+  if (filters.before) {
+    builder = builder.lte('created_at', filters.before);
   }
 
   return builder;
@@ -506,11 +489,11 @@ export const searchNotesToolDef = {
       },
       after: {
         type: 'string',
-        description: 'Custom date filter after (YYYY-MM-DD, uses published_date for library, created_at for others). Use date_range for convenient presets.'
+        description: 'Custom date filter after (YYYY-MM-DD, based on when YOU captured the content). Use date_range for convenient presets.'
       },
       before: {
         type: 'string',
-        description: 'Custom date filter before (YYYY-MM-DD). Use date_range for convenient presets.'
+        description: 'Custom date filter before (YYYY-MM-DD, based on when YOU captured the content). Use date_range for convenient presets.'
       },
       sort: {
         type: 'string',
