@@ -32,6 +32,8 @@ interface SearchFilters {
   source?: 'youtube' | 'article' | 'pdf';
   after?: string;  // YYYY-MM-DD
   before?: string; // YYYY-MM-DD
+  date_range?: 'today' | 'yesterday' | 'this_week' | 'this_month';
+  sort?: 'newest_first' | 'oldest_first' | 'relevance';
 }
 
 /**
@@ -51,6 +53,15 @@ async function searchNotes(
   const safeLimit = Math.min(Math.max(1, limit), 20);
 
   try {
+    // Convert date_range preset to after/before if provided
+    if (filters?.date_range) {
+      const dateRange = convertDateRangePreset(filters.date_range);
+      filters.after = dateRange.after;
+      if (dateRange.before) {
+        filters.before = dateRange.before;
+      }
+    }
+
     // Validate date filters
     if (filters?.after && !isValidDate(filters.after)) {
       throw new Error(`Invalid after date: must be YYYY-MM-DD format`);
@@ -59,13 +70,16 @@ async function searchNotes(
       throw new Error(`Invalid before date: must be YYYY-MM-DD format`);
     }
 
+    // Determine sort preference
+    const sortPreference = filters?.sort || (query ? 'relevance' : 'newest_first');
+
     // If query provided: use hybrid search with filters
     if (query) {
-      return await hybridSearchWithFilters(query, safeLimit, filters);
+      return await hybridSearchWithFilters(query, safeLimit, filters, sortPreference);
     }
 
     // No query: filtered browse (direct SELECT with filters)
-    return await filteredBrowse(safeLimit, filters);
+    return await filteredBrowse(safeLimit, filters, sortPreference);
   } catch (error) {
     throw new Error(`Search failed: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -80,6 +94,49 @@ function isValidDate(dateStr: string): boolean {
 
   const date = new Date(dateStr);
   return date instanceof Date && !isNaN(date.getTime());
+}
+
+/**
+ * Convert date_range preset to after/before dates
+ */
+function convertDateRangePreset(preset: string): { after: string; before?: string } {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  const formatDate = (date: Date): string => {
+    return date.toISOString().split('T')[0];
+  };
+
+  switch (preset) {
+    case 'today':
+      return { after: formatDate(today) };
+
+    case 'yesterday': {
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const dayAfterYesterday = new Date(yesterday);
+      dayAfterYesterday.setDate(dayAfterYesterday.getDate() + 1);
+      return {
+        after: formatDate(yesterday),
+        before: formatDate(dayAfterYesterday)
+      };
+    }
+
+    case 'this_week': {
+      const weekAgo = new Date(today);
+      weekAgo.setDate(weekAgo.getDate() - 7);
+      return { after: formatDate(weekAgo) };
+    }
+
+    case 'this_month': {
+      const monthAgo = new Date(today);
+      monthAgo.setDate(monthAgo.getDate() - 30);
+      return { after: formatDate(monthAgo) };
+    }
+
+    default:
+      throw new Error(`Invalid date_range preset: ${preset}`);
+  }
 }
 
 /**
@@ -207,7 +264,8 @@ function extractSnippet(content: string, query?: string): string {
 async function hybridSearchWithFilters(
   query: string,
   limit: number,
-  filters?: SearchFilters
+  filters?: SearchFilters,
+  sortPreference: string = 'relevance'
 ): Promise<SearchResult[]> {
   // People search pattern: add author to query for body text matching
   let searchQuery = query;
@@ -274,9 +332,8 @@ async function hybridSearchWithFilters(
   );
 
   // Filter and format results
-  const results = data
+  let results = data
     .filter((result: { path: string }) => metadataMap.has(result.path))
-    .slice(0, limit)
     .map((result: { path: string; snippet: string | null; score: number }) => {
       const metadata = metadataMap.get(result.path);
 
@@ -289,7 +346,15 @@ async function hybridSearchWithFilters(
       };
     });
 
-  return results;
+  // Apply sorting (only if not using relevance)
+  if (sortPreference === 'newest_first') {
+    results.sort((a: SearchResult, b: SearchResult) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+  } else if (sortPreference === 'oldest_first') {
+    results.sort((a: SearchResult, b: SearchResult) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime());
+  }
+  // else: keep RRF relevance order from hybrid search
+
+  return results.slice(0, limit);
 }
 
 /**
@@ -297,12 +362,15 @@ async function hybridSearchWithFilters(
  */
 async function filteredBrowse(
   limit: number,
-  filters?: SearchFilters
+  filters?: SearchFilters,
+  sortPreference: string = 'newest_first'
 ): Promise<SearchResult[]> {
+  const ascending = sortPreference === 'oldest_first';
+
   let query_builder = supabase
     .from('files')
     .select('path, frontmatter, created_at, body')
-    .order('created_at', { ascending: false })
+    .order('created_at', { ascending })
     .limit(limit);
 
   // Apply filters
@@ -340,8 +408,10 @@ export async function searchNotesTool(args: {
   source?: 'youtube' | 'article' | 'pdf';
   after?: string;
   before?: string;
+  date_range?: 'today' | 'yesterday' | 'this_week' | 'this_month';
+  sort?: 'newest_first' | 'oldest_first' | 'relevance';
 }): Promise<string> {
-  const { query, limit, file_type, tags, author, source, after, before } = args;
+  const { query, limit, file_type, tags, author, source, after, before, date_range, sort } = args;
   const logs: string[] = [];
 
   try {
@@ -355,6 +425,8 @@ export async function searchNotesTool(args: {
     if (source) filters.source = source;
     if (after) filters.after = after;
     if (before) filters.before = before;
+    if (date_range) filters.date_range = date_range;
+    if (sort) filters.sort = sort;
 
     if (Object.keys(filters).length > 0) {
       logs.push(`[Search] Filters: ${JSON.stringify(filters)}`);
@@ -427,13 +499,23 @@ export const searchNotesToolDef = {
         enum: ['youtube', 'article', 'pdf'],
         description: 'Filter by source type (library files only)'
       },
+      date_range: {
+        type: 'string',
+        enum: ['today', 'yesterday', 'this_week', 'this_month'],
+        description: 'Convenient date presets: today (today only), yesterday (yesterday only), this_week (last 7 days), this_month (last 30 days)'
+      },
       after: {
         type: 'string',
-        description: 'Filter by date after (YYYY-MM-DD, uses published_date for library, created_at for others)'
+        description: 'Custom date filter after (YYYY-MM-DD, uses published_date for library, created_at for others). Use date_range for convenient presets.'
       },
       before: {
         type: 'string',
-        description: 'Filter by date before (YYYY-MM-DD)'
+        description: 'Custom date filter before (YYYY-MM-DD). Use date_range for convenient presets.'
+      },
+      sort: {
+        type: 'string',
+        enum: ['newest_first', 'oldest_first', 'relevance'],
+        description: 'Sort order: newest_first (default for browse), oldest_first, relevance (default for queries)'
       },
       limit: {
         type: 'number',
