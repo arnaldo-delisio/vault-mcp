@@ -146,20 +146,35 @@ function buildFilters(builder: any, filters?: SearchFilters, userId: string = '0
 }
 
 /**
- * Extract snippet from content (150 chars around match or first 150 chars)
+ * Decode HTML entities in text
+ */
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/g, "'");
+}
+
+/**
+ * Extract snippet from content (300 chars around match or first 300 chars)
  */
 function extractSnippet(content: string, query?: string): string {
   if (!content) return '';
 
-  const maxLength = 150;
+  // Decode HTML entities first
+  const decoded = decodeHtmlEntities(content);
+  const maxLength = 300;  // Increased from 150 for better context
 
   if (!query) {
-    return content.substring(0, maxLength) + (content.length > maxLength ? '...' : '');
+    return decoded.substring(0, maxLength) + (decoded.length > maxLength ? '...' : '');
   }
 
   // Find first occurrence of any query term (case-insensitive)
   const terms = query.toLowerCase().split(/\s+/);
-  const contentLower = content.toLowerCase();
+  const contentLower = decoded.toLowerCase();
 
   let earliestMatch = -1;
   for (const term of terms) {
@@ -170,16 +185,16 @@ function extractSnippet(content: string, query?: string): string {
   }
 
   if (earliestMatch === -1) {
-    // No match found, return first 150 chars
-    return content.substring(0, maxLength) + (content.length > maxLength ? '...' : '');
+    // No match found, return first 300 chars
+    return decoded.substring(0, maxLength) + (decoded.length > maxLength ? '...' : '');
   }
 
-  // Extract ~150 chars centered on match
-  const start = Math.max(0, earliestMatch - 50);
-  const end = Math.min(content.length, start + maxLength);
-  const snippet = content.substring(start, end);
+  // Extract ~300 chars centered on match
+  const start = Math.max(0, earliestMatch - 100);
+  const end = Math.min(decoded.length, start + maxLength);
+  const snippet = decoded.substring(start, end);
 
-  return (start > 0 ? '...' : '') + snippet + (end < content.length ? '...' : '');
+  return (start > 0 ? '...' : '') + snippet + (end < decoded.length ? '...' : '');
 }
 
 /**
@@ -367,7 +382,8 @@ export async function searchNotesTool(args: {
 
     const modeDesc = query ? 'search' : 'browse';
     const debugInfo = `\n\n--- Debug Info ---\n${logs.join('\n')}`;
-    return `Found ${results.length} result${results.length === 1 ? '' : 's'} (${modeDesc}):\n\n${formattedResults}${debugInfo}`;
+    const readHint = results.length > 0 ? `\n\n💡 Use read_note tool with path to see full content of any result.` : '';
+    return `Found ${results.length} result${results.length === 1 ? '' : 's'} (${modeDesc}):\n\n${formattedResults}${readHint}${debugInfo}`;
   } catch (error) {
     logs.push(`[Search] ERROR: ${error instanceof Error ? error.message : String(error)}`);
     const debugInfo = `\n--- Debug Info ---\n${logs.join('\n')}`;
