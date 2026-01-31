@@ -89,6 +89,10 @@ function buildFilters(builder: any, filters?: SearchFilters, userId: string = '0
   // Always filter by user_id
   builder = builder.eq('user_id', userId);
 
+  // Exclude system files from search results
+  const systemFiles = ['CLAUDE.md', 'README.md', '.gitignore'];
+  builder = builder.not('path', 'in', `(${systemFiles.join(',')})`);
+
   if (!filters) return builder;
 
   // File type filter (path prefix)
