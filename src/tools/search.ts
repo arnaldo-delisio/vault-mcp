@@ -194,20 +194,26 @@ async function hybridSearchWithFilters(
   let searchQuery = query;
   if (filters?.author) {
     searchQuery = `${query} ${filters.author}`;
+    console.log(`[Hybrid] Added author to query: "${searchQuery}"`);
   }
 
   // Generate query embedding for semantic search
   let queryEmbedding: number[] | null = null;
   if (isEmbeddingAvailable()) {
     try {
+      console.log('[Hybrid] Generating query embedding...');
       queryEmbedding = await generateEmbedding(searchQuery);
+      console.log('[Hybrid] Embedding generated successfully');
     } catch (err) {
-      console.warn('Failed to generate query embedding, falling back to keyword-only:', err);
+      console.warn('[Hybrid] Failed to generate query embedding, falling back to keyword-only:', err);
     }
+  } else {
+    console.log('[Hybrid] Embeddings not available, using keyword-only search');
   }
 
   // Call hybrid_search_chunked RPC
   // Note: RPC doesn't support filters directly, so we'll filter results afterward
+  console.log(`[Hybrid] Calling hybrid_search_chunked RPC (match_count: ${limit * 3})`);
   const { data, error } = await supabase.rpc('hybrid_search_chunked', {
     query_text: searchQuery,
     query_embedding: queryEmbedding,
@@ -217,8 +223,11 @@ async function hybridSearchWithFilters(
   });
 
   if (error) {
-    throw new Error(`Hybrid search failed: ${error.message}`);
+    console.error('[Hybrid] RPC error:', error);
+    throw new Error(`Hybrid search RPC failed: ${error.message}`);
   }
+
+  console.log(`[Hybrid] RPC returned ${data?.length || 0} results`);
 
   if (!data || data.length === 0) {
     return [];
@@ -314,36 +323,56 @@ export async function searchNotesTool(args: {
   before?: string;
 }): Promise<string> {
   const { query, limit, file_type, tags, author, source, after, before } = args;
+  const logs: string[] = [];
 
-  // Build filters
-  const filters: SearchFilters = {};
-  if (file_type) filters.file_type = file_type;
-  if (tags && tags.length > 0) filters.tags = tags;
-  if (author) filters.author = author;
-  if (source) filters.source = source;
-  if (after) filters.after = after;
-  if (before) filters.before = before;
+  try {
+    logs.push(`[Search] Query: "${query || 'none'}", Limit: ${limit || 10}`);
 
-  const results = await searchNotes(query || null, limit, filters);
+    // Build filters
+    const filters: SearchFilters = {};
+    if (file_type) filters.file_type = file_type;
+    if (tags && tags.length > 0) filters.tags = tags;
+    if (author) filters.author = author;
+    if (source) filters.source = source;
+    if (after) filters.after = after;
+    if (before) filters.before = before;
 
-  if (results.length === 0) {
-    const filterDesc = Object.keys(filters).length > 0 ? ' with applied filters' : '';
-    return query
-      ? `No files found matching query: "${query}"${filterDesc}`
-      : `No files found${filterDesc}`;
-  }
+    if (Object.keys(filters).length > 0) {
+      logs.push(`[Search] Filters: ${JSON.stringify(filters)}`);
+    }
 
-  // Format results as readable text
-  const formattedResults = results.map((result, index) => {
-    const tagsStr = result.tags.length > 0 ? ` [${result.tags.join(', ')}]` : '';
-    const scoreStr = result.score !== undefined ? ` (score: ${result.score.toFixed(3)})` : '';
-    return `${index + 1}. ${result.path}${tagsStr}${scoreStr}
+    logs.push(`[Search] Embeddings available: ${isEmbeddingAvailable()}`);
+    logs.push(`[Search] Mode: ${query ? 'hybrid search' : 'filtered browse'}`);
+
+    const results = await searchNotes(query || null, limit, filters);
+
+    logs.push(`[Search] Results: ${results.length} files found`);
+
+    if (results.length === 0) {
+      const filterDesc = Object.keys(filters).length > 0 ? ' with applied filters' : '';
+      const debugInfo = `\n\n--- Debug Info ---\n${logs.join('\n')}`;
+      return query
+        ? `No files found matching query: "${query}"${filterDesc}${debugInfo}`
+        : `No files found${filterDesc}${debugInfo}`;
+    }
+
+    // Format results as readable text
+    const formattedResults = results.map((result, index) => {
+      const tagsStr = result.tags.length > 0 ? ` [${result.tags.join(', ')}]` : '';
+      const scoreStr = result.score !== undefined ? ` (score: ${result.score.toFixed(3)})` : '';
+      return `${index + 1}. ${result.path}${tagsStr}${scoreStr}
    Updated: ${new Date(result.updated_at).toLocaleDateString()}
    ${result.snippet}`;
-  }).join('\n\n');
+    }).join('\n\n');
 
-  const modeDesc = query ? 'search' : 'browse';
-  return `Found ${results.length} result${results.length === 1 ? '' : 's'} (${modeDesc}):\n\n${formattedResults}`;
+    const modeDesc = query ? 'search' : 'browse';
+    const debugInfo = `\n\n--- Debug Info ---\n${logs.join('\n')}`;
+    return `Found ${results.length} result${results.length === 1 ? '' : 's'} (${modeDesc}):\n\n${formattedResults}${debugInfo}`;
+  } catch (error) {
+    logs.push(`[Search] ERROR: ${error instanceof Error ? error.message : String(error)}`);
+    const debugInfo = `\n--- Debug Info ---\n${logs.join('\n')}`;
+    throw new Error(`Search failed${debugInfo}`);
+  }
 }
 
 /**
