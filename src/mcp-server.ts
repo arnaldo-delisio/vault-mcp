@@ -139,15 +139,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'search_notes') {
-    const result = await searchNotesTool(args as { query: string; limit?: number });
-    return {
-      content: [
-        {
-          type: 'text',
-          text: result
-        }
-      ]
-    };
+    try {
+      const result = await searchNotesTool(args as { query: string; limit?: number });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: result
+          }
+        ]
+      };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Search failed: ${errorMsg}\n\n--- Debug Info ---\n[Handler] Error caught in MCP server handler\n[Handler] Args: ${JSON.stringify(args)}\n[Handler] Stack: ${error instanceof Error ? error.stack : 'No stack trace'}`
+          }
+        ],
+        isError: true
+      };
+    }
   }
 
   if (name === 'read_note') {
